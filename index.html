@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>印刷タグ付けスキャナ</title>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    :root { --mode-color:#e879f9; --bg:#090b12; --surface:#171b28; --text:#f5f7ff; --muted:#a6aec4; --danger:#ff6262; --ok:#35d58a; --warn:#f5b84b; }
+    * { box-sizing:border-box; }
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; }
+    .screen { position:fixed; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; }
+    .screen.active { display:flex; }
+    #camera-screen { background:#000; }
+    #video { width:100%; height:100%; object-fit:cover; }
+    .camera-overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; pointer-events:none; }
+    .topbar { width:100%; padding:calc(18px + env(safe-area-inset-top)) 20px 18px; background:linear-gradient(#090b12ee,transparent); display:flex; align-items:center; gap:10px; }
+    .mode-dot { width:10px; height:10px; border-radius:50%; background:var(--mode-color); box-shadow:0 0 12px var(--mode-color); }
+    .title { font-size:18px; font-weight:800; letter-spacing:.04em; }
+    .subtitle { margin-left:auto; color:#d5d9e8; font-size:12px; }
+    .scan-frame { position:absolute; top:50%; left:50%; width:min(72vw,300px); aspect-ratio:1; transform:translate(-50%,-50%); }
+    .scan-frame::before, .scan-frame::after, .corner { content:""; position:absolute; width:42px; height:42px; border:4px solid #fff; }
+    .scan-frame::before { top:0; left:0; border-right:0; border-bottom:0; border-radius:8px 0 0; }
+    .scan-frame::after { top:0; right:0; border-left:0; border-bottom:0; border-radius:0 8px 0 0; }
+    .corner.br { right:0; bottom:0; border-left:0; border-top:0; border-radius:0 0 8px; }
+    .corner.bl { left:0; bottom:0; border-right:0; border-top:0; border-radius:0 0 0 8px; }
+    .scan-line { position:absolute; left:14px; right:14px; height:3px; background:var(--mode-color); box-shadow:0 0 10px var(--mode-color); animation:scan 2s ease-in-out infinite; }
+    @keyframes scan { 0%,100% { top:16px; opacity:.3; } 50% { top:calc(100% - 19px); opacity:1; } }
+    .hint { position:absolute; bottom:calc(36px + env(safe-area-inset-bottom)); padding:10px 18px; border-radius:999px; background:#0009; color:#fff; font-size:14px; }
+    #loading-screen, #error-screen, #forbidden-screen { padding:28px; text-align:center; background:var(--bg); }
+    #signin-screen { padding:28px; text-align:center; background:var(--bg); }
+    .card { width:min(100%,420px); padding:28px 22px; border:1px solid #2b3248; border-radius:20px; background:var(--surface); }
+    h1 { margin:0 0 12px; font-size:22px; } p { margin:8px 0; color:var(--muted); line-height:1.7; white-space:pre-wrap; }
+    .spinner { width:42px; height:42px; margin:0 auto 18px; border:4px solid #343b52; border-top-color:var(--mode-color); border-radius:50%; animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    button { margin-top:18px; width:100%; padding:14px 18px; border:0; border-radius:12px; background:var(--mode-color); color:#17091a; font-size:16px; font-weight:800; }
+    #toast { position:fixed; left:18px; right:18px; bottom:calc(26px + env(safe-area-inset-bottom)); z-index:20; transform:translateY(140%); opacity:0; transition:transform .2s,opacity .2s; padding:15px 17px; border-radius:14px; background:#202638f5; border:1px solid #44506d; box-shadow:0 8px 30px #0008; font-size:15px; line-height:1.5; }
+    #toast.show { transform:translateY(0); opacity:1; }
+    #toast.success { border-color:var(--ok); } #toast.warning { border-color:var(--warn); } #toast.error { border-color:var(--danger); }
+    #canvas { display:none; }
+    #g_id_signin { display:flex; justify-content:center; margin-top:22px; min-height:44px; }
+  </style>
+</head>
+<body>
+  <section id="signin-screen" class="screen active" aria-label="サインイン">
+    <div class="card">
+      <h1>印刷モード</h1>
+      <p id="signin-message">Googleアカウントでサインインしてください。</p>
+      <div id="g_id_onload"
+           data-client_id="247141824181-si649s1bi3phv2vop6ieqf1notas3jlm.apps.googleusercontent.com"
+           data-callback="handleSignIn"
+           data-auto_prompt="false"></div>
+      <div id="g_id_signin" class="g_id_signin" data-type="standard" data-size="large" data-theme="filled_blue"></div>
+    </div>
+  </section>
+  <section id="camera-screen" class="screen" aria-label="印刷モード">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="camera-overlay">
+      <div class="topbar"><span class="mode-dot"></span><span class="title">印刷モード</span><span class="subtitle">QRをかざしてください</span></div>
+      <div class="scan-frame"><span class="corner br"></span><span class="corner bl"></span><span class="scan-line"></span></div>
+      <div class="hint">スキャンすると自動で印刷タグを付けます</div>
+    </div>
+  </section>
+  <section id="loading-screen" class="screen"><div class="card"><div class="spinner"></div><p id="loading-message">カメラを準備しています…</p></div></section>
+  <section id="error-screen" class="screen"><div class="card"><h1>処理できませんでした</h1><p id="error-message"></p><button id="retry-button" type="button">カメラに戻る</button></div></section>
+  <section id="forbidden-screen" class="screen"><div class="card"><h1>アクセスできません</h1><p id="forbidden-message">許可されたGoogleアカウントでサインインしてください。</p><button id="forbidden-button" type="button">サインイン画面へ戻る</button></div></section>
+  <canvas id="canvas"></canvas><div id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      const GAS_URL = 'https://script.google.com/macros/s/AKfycbz1kAMMqL9AefMPCm4RJyp-bgwUovbKVUotBAhAY0l5lTahrxJq4ua-dExrp0SrdBhJ/exec';
+      const video = document.getElementById('video');
+      const canvas = document.getElementById('canvas');
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      const toast = document.getElementById('toast');
+      let stream = null;
+      let scanning = false;
+      let requestInFlight = false;
+      let lastScannedValue = '';
+      let lastScannedAt = 0;
+      let toastTimer = null;
+      let idToken = '';
+
+      window.handleSignIn = function(response) {
+        if (!response || !response.credential) {
+          showSignIn('サインインに失敗しました。もう一度お試しください。');
+          return;
+        }
+        idToken = response.credential;
+        startCamera();
+      };
+
+      function showScreen(id) {
+        document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active'));
+        document.getElementById(id).classList.add('active');
+      }
+
+      function showToast(message, type) {
+        toast.textContent = message || '処理に失敗しました';
+        toast.className = 'show ' + (type || '');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { toast.className = ''; }, 3200);
+      }
+
+      function stopCamera() {
+        scanning = false;
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+          stream = null;
+        }
+        video.srcObject = null;
+      }
+
+      function showSignIn(message) {
+        stopCamera();
+        requestInFlight = false;
+        idToken = '';
+        document.getElementById('signin-message').textContent = message || 'Googleアカウントでサインインしてください。';
+        showScreen('signin-screen');
+      }
+
+      function showForbidden() {
+        stopCamera();
+        requestInFlight = false;
+        idToken = '';
+        document.getElementById('forbidden-message').textContent = 'このアカウントは許可リストに登録されていません。許可された別のGoogleアカウントでサインインしてください。';
+        showScreen('forbidden-screen');
+      }
+
+      function returnToCamera() {
+        requestInFlight = false;
+        showScreen('camera-screen');
+        if (!scanning) { scanning = true; requestAnimationFrame(scanFrame); }
+      }
+
+      function showError(message) {
+        scanning = false;
+        document.getElementById('error-message').textContent = message || '予期しないエラーが発生しました。';
+        showScreen('error-screen');
+      }
+
+      async function startCamera() {
+        showScreen('loading-screen');
+        try {
+          stopCamera();
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('このブラウザではカメラを利用できません。');
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+          video.srcObject = stream;
+          await video.play();
+          scanning = true;
+          showScreen('camera-screen');
+          requestAnimationFrame(scanFrame);
+        } catch (error) {
+          showError('カメラを起動できませんでした。\nブラウザのカメラ権限を許可して再試行してください。');
+        }
+      }
+
+      function scanFrame() {
+        if (!scanning) return;
+        if (video.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA && !requestInFlight) {
+          const scale = Math.min(1, 640 / video.videoWidth);
+          canvas.width = Math.max(1, Math.floor(video.videoWidth * scale));
+          canvas.height = Math.max(1, Math.floor(video.videoHeight * scale));
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const image = context.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'attemptBoth' });
+          if (code && code.data) handleQr(code.data);
+        }
+        requestAnimationFrame(scanFrame);
+      }
+
+      function handleQr(rawValue) {
+        const orderId = String(rawValue).trim();
+        const now = Date.now();
+        if (!orderId || requestInFlight || (orderId === lastScannedValue && now - lastScannedAt < 2500)) return;
+        lastScannedValue = orderId;
+        lastScannedAt = now;
+        requestInFlight = true;
+        submitPrint(orderId);
+      }
+
+      async function submitPrint(orderId) {
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'print', order_id: orderId, id_token: idToken }) });
+          const response = await fetch(GAS_URL, { method: 'POST', body });
+          const data = await response.json();
+          if (data.error_code === 'TOKEN_MISSING' || data.error_code === 'TOKEN_INVALID') {
+            showSignIn('サインインの有効期限が切れました。もう一度サインインしてください。');
+            return;
+          }
+          if (data.error_code === 'FORBIDDEN') { showForbidden(); return; }
+          if (!data.ok) { showToast(data.error || '処理に失敗しました。', 'error'); returnToCamera(); return; }
+          const label = data.store_label ? `（${data.store_label}）` : '';
+          const duplicate = data.already_tagged ? '印刷済みです。' : '印刷タグを付けました。';
+          showToast(`${data.order_number || data.order_id}${label}\n${duplicate}`, data.already_tagged ? 'warning' : 'success');
+          returnToCamera();
+        } catch (error) {
+          showToast('通信に失敗しました。もう一度お試しください。', 'error');
+          returnToCamera();
+        }
+      }
+
+      document.getElementById('retry-button').addEventListener('click', startCamera);
+      document.getElementById('forbidden-button').addEventListener('click', () => showSignIn());
+    })();
+  </script>
+</body>
+</html>
