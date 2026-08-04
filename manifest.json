@@ -1,6 +1,6 @@
 {
-  "name": "Mr_nouhin 納品管理スキャナ",
-  "short_name": "納品スキャナ",
+  "name": "納品ちゃん",
+  "short_name": "納品ちゃん",
   "description": "注文書QRスキャン → 印刷タグ付け",
   "start_url": "./",
   "scope": "./",
