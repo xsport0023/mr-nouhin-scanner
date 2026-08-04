@@ -59,11 +59,7 @@
     <div class="card">
       <h1>印刷モード</h1>
       <p id="signin-message">Googleアカウントでサインインしてください。</p>
-      <div id="g_id_onload"
-           data-client_id="247141824181-si649s1bi3phv2vop6ieqf1notas3jlm.apps.googleusercontent.com"
-           data-callback="handleSignIn"
-           data-auto_prompt="false"></div>
-      <div id="g_id_signin" class="g_id_signin" data-type="standard" data-size="large" data-theme="filled_blue"></div>
+      <div id="g_id_signin" class="g_id_signin"></div>
     </div>
   </section>
   <section id="camera-screen" class="screen" aria-label="印刷モード">
@@ -86,6 +82,7 @@
   <script>
     (() => {
       const GAS_URL = 'https://script.google.com/macros/s/AKfycbz1kAMMqL9AefMPCm4RJyp-bgwUovbKVUotBAhAY0l5lTahrxJq4ua-dExrp0SrdBhJ/exec';
+      const GOOGLE_CLIENT_ID = '247141824181-si649s1bi3phv2vop6ieqf1notas3jlm.apps.googleusercontent.com';
       const video = document.getElementById('video');
       const canvas = document.getElementById('canvas');
       const context = canvas.getContext('2d', { willReadFrequently: true });
@@ -142,6 +139,24 @@
         idToken = '';
         document.getElementById('forbidden-message').textContent = 'このアカウントは許可リストに登録されていません。許可された別のGoogleアカウントでサインインしてください。';
         showScreen('forbidden-screen');
+      }
+
+      function initializeGoogleSignIn(attempt = 0) {
+        if (!window.google || !google.accounts || !google.accounts.id) {
+          if (attempt < 40) setTimeout(() => initializeGoogleSignIn(attempt + 1), 250);
+          return;
+        }
+        google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: window.handleSignIn,
+          auto_select: true
+        });
+        google.accounts.id.renderButton(document.getElementById('g_id_signin'), {
+          type: 'standard',
+          size: 'large',
+          theme: 'filled_blue'
+        });
+        google.accounts.id.prompt();
       }
 
       function maybeShowInstallHint() {
@@ -234,6 +249,7 @@
       document.getElementById('install-hint-close').addEventListener('click', () => {
         document.getElementById('install-hint').classList.remove('show');
       });
+      initializeGoogleSignIn();
     })();
   </script>
 </body>
