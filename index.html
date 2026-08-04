@@ -4,6 +4,13 @@
   <base target="_top">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="icon" href="./favicon-32.png" sizes="32x32">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="納品スキャナ">
+  <meta name="theme-color" content="#090b12">
   <title>印刷タグ付けスキャナ</title>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -39,6 +46,10 @@
     #toast { position:fixed; left:18px; right:18px; bottom:calc(26px + env(safe-area-inset-bottom)); z-index:20; transform:translateY(140%); opacity:0; transition:transform .2s,opacity .2s; padding:15px 17px; border-radius:14px; background:#202638f5; border:1px solid #44506d; box-shadow:0 8px 30px #0008; font-size:15px; line-height:1.5; }
     #toast.show { transform:translateY(0); opacity:1; }
     #toast.success { border-color:var(--ok); } #toast.warning { border-color:var(--warn); } #toast.error { border-color:var(--danger); }
+    #install-hint { position:fixed; left:14px; right:14px; bottom:calc(18px + env(safe-area-inset-bottom)); z-index:25; display:none; align-items:center; gap:12px; padding:13px 14px; border:1px solid #596581; border-radius:14px; background:#171b28f5; box-shadow:0 8px 26px #0009; color:var(--text); font-size:13px; line-height:1.5; }
+    #install-hint.show { display:flex; }
+    #install-hint p { flex:1; margin:0; color:var(--text); }
+    #install-hint button { flex:0 0 auto; width:auto; margin:0; padding:8px 12px; background:#303951; color:var(--text); font-size:13px; }
     #canvas { display:none; }
     #g_id_signin { display:flex; justify-content:center; margin-top:22px; min-height:44px; }
   </style>
@@ -67,6 +78,10 @@
   <section id="error-screen" class="screen"><div class="card"><h1>処理できませんでした</h1><p id="error-message"></p><button id="retry-button" type="button">カメラに戻る</button></div></section>
   <section id="forbidden-screen" class="screen"><div class="card"><h1>アクセスできません</h1><p id="forbidden-message">許可されたGoogleアカウントでサインインしてください。</p><button id="forbidden-button" type="button">サインイン画面へ戻る</button></div></section>
   <canvas id="canvas"></canvas><div id="toast" role="status" aria-live="polite"></div>
+  <aside id="install-hint" aria-label="ホーム画面への追加案内">
+    <p>共有・メニューボタンから「ホーム画面に追加」を選ぶと、次回からすぐ起動できます。</p>
+    <button id="install-hint-close" type="button">閉じる</button>
+  </aside>
 
   <script>
     (() => {
@@ -89,7 +104,7 @@
           return;
         }
         idToken = response.credential;
-        startCamera();
+        startCamera().then(maybeShowInstallHint);
       };
 
       function showScreen(id) {
@@ -127,6 +142,18 @@
         idToken = '';
         document.getElementById('forbidden-message').textContent = 'このアカウントは許可リストに登録されていません。許可された別のGoogleアカウントでサインインしてください。';
         showScreen('forbidden-screen');
+      }
+
+      function maybeShowInstallHint() {
+        const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+        if (isStandalone || !document.getElementById('camera-screen').classList.contains('active')) return;
+        try {
+          if (localStorage.getItem('addToHomeScreenSeen') === '1') return;
+          localStorage.setItem('addToHomeScreenSeen', '1');
+        } catch (error) {
+          return;
+        }
+        document.getElementById('install-hint').classList.add('show');
       }
 
       function returnToCamera() {
@@ -204,6 +231,9 @@
 
       document.getElementById('retry-button').addEventListener('click', startCamera);
       document.getElementById('forbidden-button').addEventListener('click', () => showSignIn());
+      document.getElementById('install-hint-close').addEventListener('click', () => {
+        document.getElementById('install-hint').classList.remove('show');
+      });
     })();
   </script>
 </body>
