@@ -159,6 +159,13 @@
       let shippingItems = [];
       let pendingShipScan = null;
       let lastTeamDestination = null;
+      const SCAN_INTERVAL_MS = 80;
+      const SCAN_ROI_FRACTION = 0.75;
+      let scanTimer = null;
+      let decodeInFlight = false;
+      let scanGeneration = 0;
+      let barcodeDetector = null;
+      let canvasSide = 0;
 
       window.handleSignIn = function(response) {
         if (!response || !response.credential) {
@@ -183,11 +190,18 @@
 
       function stopCamera() {
         scanning = false;
+        scanGeneration += 1;
+        if (scanTimer !== null) {
+          clearTimeout(scanTimer);
+          scanTimer = null;
+        }
+        decodeInFlight = false;
         if (stream) {
           stream.getTracks().forEach(track => track.stop());
           stream = null;
         }
         video.srcObject = null;
+        canvasSide = 0;
       }
 
       function showSignIn(message) {
@@ -277,7 +291,7 @@
       function returnToCamera() {
         requestInFlight = false;
         showScreen('camera-screen');
-        if (!scanning) { scanning = true; requestAnimationFrame(scanFrame); }
+        if (!scanning) { scanning = true; scheduleScan(); }
       }
 
       function showError(message) {
@@ -294,26 +308,80 @@
           stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
           video.srcObject = stream;
           await video.play();
+          await initializeBarcodeDetector();
           scanning = true;
           showScreen('camera-screen');
-          requestAnimationFrame(scanFrame);
+          scheduleScan();
         } catch (error) {
           showError('カメラを起動できませんでした。\nブラウザのカメラ権限を許可して再試行してください。');
         }
       }
 
-      function scanFrame() {
-        if (!scanning) return;
-        if (video.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA && !requestInFlight) {
-          const scale = Math.min(1, 640 / video.videoWidth);
-          canvas.width = Math.max(1, Math.floor(video.videoWidth * scale));
-          canvas.height = Math.max(1, Math.floor(video.videoHeight * scale));
-          context.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const image = context.getImageData(0, 0, canvas.width, canvas.height);
-          const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'attemptBoth' });
-          if (code && code.data) handleQr(code.data);
+      async function initializeBarcodeDetector() {
+        barcodeDetector = null;
+        if (!('BarcodeDetector' in window)) return;
+        try {
+          const formats = await window.BarcodeDetector.getSupportedFormats();
+          if (formats.includes('qr_code')) {
+            barcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
+          }
+        } catch (error) {
+          barcodeDetector = null;
         }
-        requestAnimationFrame(scanFrame);
+      }
+
+      function scheduleScan() {
+        if (!scanning || scanTimer !== null) return;
+        scanTimer = setTimeout(scanFrame, SCAN_INTERVAL_MS);
+      }
+
+      async function scanFrame() {
+        scanTimer = null;
+        if (!scanning || decodeInFlight) { scheduleScan(); return; }
+        if (video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA || requestInFlight) {
+          scheduleScan();
+          return;
+        }
+
+        decodeInFlight = true;
+        const generation = scanGeneration;
+        try {
+          const value = await decodeFrame();
+          if (generation === scanGeneration && value) handleQr(value);
+        } finally {
+          if (generation === scanGeneration) {
+            decodeInFlight = false;
+            scheduleScan();
+          }
+        }
+      }
+
+      async function decodeFrame() {
+        const sourceSide = Math.floor(Math.min(video.videoWidth, video.videoHeight) * SCAN_ROI_FRACTION);
+        if (!sourceSide) return '';
+        const targetSide = Math.min(640, sourceSide);
+        if (canvasSide !== targetSide) {
+          canvas.width = targetSide;
+          canvas.height = targetSide;
+          canvasSide = targetSide;
+        }
+        const sourceX = Math.floor((video.videoWidth - sourceSide) / 2);
+        const sourceY = Math.floor((video.videoHeight - sourceSide) / 2);
+        context.drawImage(video, sourceX, sourceY, sourceSide, sourceSide, 0, 0, targetSide, targetSide);
+
+        if (barcodeDetector) {
+          try {
+            const detected = await barcodeDetector.detect(canvas);
+            if (detected.length && detected[0].rawValue) return detected[0].rawValue;
+            return '';
+          } catch (error) {
+            barcodeDetector = null;
+          }
+        }
+
+        const image = context.getImageData(0, 0, canvasSide, canvasSide);
+        const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'dontInvert' });
+        return code && code.data ? code.data : '';
       }
 
       function handleQr(rawValue) {
@@ -390,6 +458,7 @@
           order_id: data.order_id,
           order_number: data.order_number,
           store: data.store,
+          team_name: data.team_name || '',
           package_count: 1,
           destination: { ...destination }
         });
