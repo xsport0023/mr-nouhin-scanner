@@ -176,9 +176,10 @@
       let shippingItems = [];
       let pendingShipScan = null;
       let lastTeamDestination = null;
-      const SCAN_INTERVAL_MS = 80;
+      const SCAN_INTERVAL_MS = 16;
       const SCAN_ROI_FRACTION = 0.75;
       let scanTimer = null;
+      let scanTimerType = '';
       let decodeInFlight = false;
       let scanGeneration = 0;
       let barcodeDetector = null;
@@ -228,6 +229,7 @@
           firstScanEligibleMs: cameraPerformance.firstScanEligibleMs,
           barcodeDetectorApiAvailable: cameraPerformance.barcodeDetectorApiAvailable,
           barcodeDetectorQrSupported: cameraPerformance.barcodeDetectorQrSupported,
+          scanScheduler: cameraPerformance.scanScheduler,
           userAgent: cameraPerformance.userAgent,
           platform: cameraPerformance.platform,
           settings: { ...(cameraPerformance.settings || {}) }
@@ -326,6 +328,7 @@
           `redirect: ${api.redirected ? 'yes' : 'no'} / final: ${api.finalHost || '—'}`,
           `カメラ: getUserMedia ${formatMs(camera.getUserMediaMs)} / play ${formatMs(camera.videoPlayMs)} / detector ${formatMs(camera.detectorInitMs)} / ready ${formatMs(camera.cameraReadyMs)} / 初回試行可能 ${formatMs(camera.firstScanEligibleMs)}`,
           `映像: ${settings.width || scan.sourceWidth || 0}x${settings.height || scan.sourceHeight || 0} @${settings.frameRate || '—'}fps → ROI ${scan.sourceSide || 0}px → canvas ${scan.canvasSide || 0}px`,
+          `試行方式: ${camera.scanScheduler || '—'}`,
           `BarcodeDetector: API ${camera.barcodeDetectorApiAvailable ? 'yes' : 'no'} / QR ${camera.barcodeDetectorQrSupported ? 'yes' : 'no'}`,
           `端末: ${camera.platform || '—'} / ${camera.userAgent || '—'}`
         ];
@@ -468,10 +471,7 @@
         requestInFlight = false;
         scanGeneration += 1;
         setScanFeedback(false);
-        if (scanTimer !== null) {
-          clearTimeout(scanTimer);
-          scanTimer = null;
-        }
+        cancelScheduledScan();
         decodeInFlight = false;
         if (stream) {
           stream.getTracks().forEach(track => track.stop());
@@ -596,12 +596,21 @@
             firstScanEligibleMs: null,
             barcodeDetectorApiAvailable: 'BarcodeDetector' in window,
             barcodeDetectorQrSupported: false,
+            scanScheduler: typeof video.requestVideoFrameCallback === 'function' ? 'requestVideoFrameCallback' : `setTimeout(${SCAN_INTERVAL_MS}ms)`,
             userAgent: navigator.userAgent || '',
             platform: navigator.platform || '',
             settings: {}
           };
           const mediaStartedAt = nowMs();
-          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { ideal: 'environment' },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+              frameRate: { ideal: 30 }
+            },
+            audio: false
+          });
           cameraPerformance.getUserMediaMs = nowMs() - mediaStartedAt;
           video.srcObject = stream;
           const playStartedAt = nowMs();
@@ -640,18 +649,43 @@
         }
       }
 
+      function cancelScheduledScan() {
+        if (scanTimer === null) return;
+        if (scanTimerType === 'video_frame' && typeof video.cancelVideoFrameCallback === 'function') {
+          video.cancelVideoFrameCallback(scanTimer);
+        } else {
+          clearTimeout(scanTimer);
+        }
+        scanTimer = null;
+        scanTimerType = '';
+      }
+
       function scheduleScan() {
         if (!scanning || scanTimer !== null) return;
-        scanTimer = setTimeout(scanFrame, SCAN_INTERVAL_MS);
+        if (typeof video.requestVideoFrameCallback === 'function') {
+          scanTimerType = 'video_frame';
+          scanTimer = video.requestVideoFrameCallback(() => {
+            scanTimer = null;
+            scanTimerType = '';
+            scanFrame();
+          });
+          return;
+        }
+        scanTimerType = 'timeout';
+        scanTimer = setTimeout(() => {
+          scanTimer = null;
+          scanTimerType = '';
+          scanFrame();
+        }, SCAN_INTERVAL_MS);
       }
 
       async function scanFrame() {
-        scanTimer = null;
         if (!scanning || decodeInFlight) { scheduleScan(); return; }
-        if (video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA || requestInFlight) {
+        if (video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA) {
           scheduleScan();
           return;
         }
+        if (requestInFlight) return;
 
         if (cameraPerformance && cameraPerformance.firstScanEligibleMs === null) {
           cameraPerformance.firstScanEligibleMs = nowMs() - cameraPerformance.startedAt;
