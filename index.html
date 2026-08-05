@@ -34,6 +34,10 @@
     .corner.br { right:0; bottom:0; border-left:0; border-top:0; border-radius:0 0 8px; }
     .corner.bl { left:0; bottom:0; border-right:0; border-top:0; border-radius:0 0 0 8px; }
     .scan-line { position:absolute; left:14px; right:14px; height:3px; background:var(--mode-color); box-shadow:0 0 10px var(--mode-color); animation:scan 2s ease-in-out infinite; }
+    .scan-frame.detected::before, .scan-frame.detected::after, .scan-frame.detected .corner { border-color:var(--ok); box-shadow:0 0 18px #35d58aaa; }
+    .scan-frame.detected .scan-line { background:var(--ok); box-shadow:0 0 14px var(--ok); animation-play-state:paused; }
+    .scan-feedback { position:absolute; inset:50% auto auto 50%; display:none; min-width:210px; transform:translate(-50%,-50%); padding:12px 16px; border:1px solid var(--ok); border-radius:999px; background:#071d16e8; color:#d7ffec; font-size:14px; font-weight:800; text-align:center; box-shadow:0 8px 28px #0009; }
+    .scan-frame.detected .scan-feedback { display:block; }
     @keyframes scan { 0%,100% { top:16px; opacity:.3; } 50% { top:calc(100% - 19px); opacity:1; } }
     .hint { position:absolute; bottom:calc(36px + env(safe-area-inset-bottom)); padding:10px 18px; border-radius:999px; background:#0009; color:#fff; font-size:14px; }
     #loading-screen, #error-screen, #forbidden-screen { padding:28px; text-align:center; background:var(--bg); }
@@ -55,6 +59,12 @@
     #g_id_signin { display:flex; justify-content:center; margin-top:22px; min-height:44px; }
     .choice-list { display:flex; flex-direction:column; gap:12px; margin-top:22px; }
     .choice-button { margin:0; color:#fff; background:#2b3550; border:1px solid #52617f; }
+    .debug-option { display:flex; align-items:center; justify-content:center; gap:10px; margin-top:20px; color:var(--muted); font-size:14px; }
+    .debug-option input { width:20px; height:20px; accent-color:var(--mode-color); }
+    #perf-panel { position:absolute; z-index:16; top:calc(76px + env(safe-area-inset-top)); left:10px; right:10px; max-height:42vh; overflow:auto; padding:11px 12px; border:1px solid #7180a5; border-radius:12px; background:#090b12e8; box-shadow:0 8px 24px #000a; pointer-events:auto; text-align:left; }
+    #perf-panel[hidden] { display:none; }
+    #perf-panel strong { display:block; margin-bottom:6px; color:#fff; font-size:13px; }
+    #perf-output { margin:0; color:#dce4ff; font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-word; }
     .choice-button.ship { background:#0f766e; border-color:#2dd4bf; }
     .ship-controls { position:absolute; left:12px; right:12px; bottom:calc(16px + env(safe-area-inset-bottom)); z-index:12; padding:12px; border:1px solid #2dd4bf88; border-radius:16px; background:#082f2eef; pointer-events:auto; }
     .ship-summary { display:flex; justify-content:space-between; align-items:center; gap:10px; color:#ccfbf1; font-size:13px; }
@@ -88,6 +98,7 @@
         <button id="print-mode-button" class="choice-button" type="button">印刷タグ付け</button>
         <button id="ship-mode-button" class="choice-button ship" type="button">発送準備</button>
       </div>
+      <label class="debug-option"><input id="perf-toggle" type="checkbox">速度計測を表示</label>
     </div>
   </section>
   <section id="carrier-screen" class="screen" aria-label="発送方法選択">
@@ -103,8 +114,9 @@
     <video id="video" autoplay playsinline muted></video>
     <div class="camera-overlay">
       <div class="topbar"><span class="mode-dot"></span><span id="camera-title" class="title">印刷モード</span><span id="camera-subtitle" class="subtitle">QRをかざしてください</span></div>
-      <div class="scan-frame"><span class="corner br"></span><span class="corner bl"></span><span class="scan-line"></span></div>
+      <div id="scan-frame" class="scan-frame"><span class="corner br"></span><span class="corner bl"></span><span class="scan-line"></span><span id="scan-feedback" class="scan-feedback" role="status" aria-live="polite">QR読取済み・照会中…</span></div>
       <div id="camera-hint" class="hint">スキャンすると自動で印刷タグを付けます</div>
+      <aside id="perf-panel" aria-label="速度計測結果" hidden><strong>速度計測（端末内のみ）</strong><pre id="perf-output">計測待機中</pre></aside>
       <div id="ship-controls" class="ship-controls" hidden>
         <div class="ship-summary"><span><span id="carrier-label">発送準備</span> / スキャン済み</span><strong id="ship-count">0件</strong></div>
         <div id="ship-list" class="ship-list"></div>
@@ -143,10 +155,15 @@
     (() => {
       const GAS_URL = 'https://script.google.com/macros/s/AKfycbz1kAMMqL9AefMPCm4RJyp-bgwUovbKVUotBAhAY0l5lTahrxJq4ua-dExrp0SrdBhJ/exec';
       const GOOGLE_CLIENT_ID = '247141824181-si649s1bi3phv2vop6ieqf1notas3jlm.apps.googleusercontent.com';
+      const PAGE_STARTED_AT = performance.now();
       const video = document.getElementById('video');
       const canvas = document.getElementById('canvas');
       const context = canvas.getContext('2d', { willReadFrequently: true });
       const toast = document.getElementById('toast');
+      const scanFrameElement = document.getElementById('scan-frame');
+      const perfToggle = document.getElementById('perf-toggle');
+      const perfPanel = document.getElementById('perf-panel');
+      const perfOutput = document.getElementById('perf-output');
       let stream = null;
       let scanning = false;
       let requestInFlight = false;
@@ -166,6 +183,264 @@
       let scanGeneration = 0;
       let barcodeDetector = null;
       let canvasSide = 0;
+      let debugPerformanceEnabled = false;
+      let cameraPerformance = null;
+      let activeScanPerformance = null;
+      let performanceSequence = 0;
+      let performanceHistory = [];
+      let lastRequestCompletedAt = null;
+
+      function nowMs() {
+        return performance.now();
+      }
+
+      function formatMs(value) {
+        return Number.isFinite(value) ? `${Math.round(value)}ms` : '—';
+      }
+
+      function waitForNextPaint() {
+        return new Promise(resolve => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve(nowMs())));
+        });
+      }
+
+      function cameraSettingsSnapshot() {
+        if (!stream) return {};
+        const track = stream.getVideoTracks()[0];
+        if (!track || typeof track.getSettings !== 'function') return {};
+        const settings = track.getSettings();
+        return {
+          width: settings.width || 0,
+          height: settings.height || 0,
+          frameRate: settings.frameRate || 0,
+          facingMode: settings.facingMode || '',
+          aspectRatio: settings.aspectRatio || 0
+        };
+      }
+
+      function cameraPerformanceSnapshot() {
+        if (!cameraPerformance) return null;
+        return {
+          getUserMediaMs: cameraPerformance.getUserMediaMs,
+          videoPlayMs: cameraPerformance.videoPlayMs,
+          detectorInitMs: cameraPerformance.detectorInitMs,
+          cameraReadyMs: cameraPerformance.cameraReadyMs,
+          firstScanEligibleMs: cameraPerformance.firstScanEligibleMs,
+          barcodeDetectorApiAvailable: cameraPerformance.barcodeDetectorApiAvailable,
+          barcodeDetectorQrSupported: cameraPerformance.barcodeDetectorQrSupported,
+          userAgent: cameraPerformance.userAgent,
+          platform: cameraPerformance.platform,
+          settings: { ...(cameraPerformance.settings || {}) }
+        };
+      }
+
+      function beginScanCycle() {
+        activeScanPerformance = {
+          startedAt: nowMs(),
+          attemptCount: 0,
+          decodeTotalMs: 0,
+          decodeMaxMs: 0,
+          decodeLastMs: 0,
+          intervalCount: 0,
+          intervalTotalMs: 0,
+          intervalMaxMs: 0,
+          lastAttemptStartedAt: null,
+          decoderCounts: {},
+          sourceWidth: video.videoWidth || 0,
+          sourceHeight: video.videoHeight || 0,
+          sourceSide: 0,
+          canvasSide: 0,
+          detectedAt: null,
+          detectWaitMs: null,
+          feedbackPaintMs: null
+        };
+      }
+
+      function recordScanAttempt(startedAt, durationMs, result) {
+        if (!activeScanPerformance) beginScanCycle();
+        const metrics = activeScanPerformance;
+        if (metrics.lastAttemptStartedAt !== null) {
+          const intervalMs = startedAt - metrics.lastAttemptStartedAt;
+          metrics.intervalCount += 1;
+          metrics.intervalTotalMs += intervalMs;
+          metrics.intervalMaxMs = Math.max(metrics.intervalMaxMs, intervalMs);
+        }
+        metrics.lastAttemptStartedAt = startedAt;
+        metrics.attemptCount += 1;
+        metrics.decodeTotalMs += durationMs;
+        metrics.decodeMaxMs = Math.max(metrics.decodeMaxMs, durationMs);
+        metrics.decodeLastMs = durationMs;
+        metrics.sourceWidth = video.videoWidth || metrics.sourceWidth;
+        metrics.sourceHeight = video.videoHeight || metrics.sourceHeight;
+        metrics.sourceSide = result.sourceSide || metrics.sourceSide;
+        metrics.canvasSide = result.canvasSide || metrics.canvasSide;
+        const path = result.decoderPath || 'unknown';
+        metrics.decoderCounts[path] = (metrics.decoderCounts[path] || 0) + 1;
+      }
+
+      function summarizeScanPerformance(metrics) {
+        if (!metrics) return null;
+        return {
+          attemptCount: metrics.attemptCount,
+          decodeAverageMs: metrics.attemptCount ? metrics.decodeTotalMs / metrics.attemptCount : 0,
+          decodeMaxMs: metrics.decodeMaxMs,
+          decodeLastMs: metrics.decodeLastMs,
+          intervalAverageMs: metrics.intervalCount ? metrics.intervalTotalMs / metrics.intervalCount : 0,
+          intervalMaxMs: metrics.intervalMaxMs,
+          detectWaitMs: metrics.detectWaitMs,
+          feedbackPaintMs: metrics.feedbackPaintMs,
+          decoderCounts: { ...metrics.decoderCounts },
+          sourceWidth: metrics.sourceWidth,
+          sourceHeight: metrics.sourceHeight,
+          sourceSide: metrics.sourceSide,
+          canvasSide: metrics.canvasSide
+        };
+      }
+
+      function renderPerformancePanel() {
+        perfPanel.hidden = !debugPerformanceEnabled;
+        if (!debugPerformanceEnabled) return;
+        if (!performanceHistory.length) {
+          perfOutput.textContent = '計測待機中\nQRを読み取ると結果を表示します。';
+          return;
+        }
+
+        const result = performanceHistory[0];
+        const scan = result.scan || {};
+        const api = result.api || {};
+        const camera = result.camera || {};
+        const settings = camera.settings || {};
+        const decoderPaths = Object.entries(scan.decoderCounts || {}).map(([name, count]) => `${name}:${count}`).join(', ') || '—';
+        const lines = [
+          `#${result.sequence} ${result.action} / ${result.outcome}`,
+          `検出待ち: ${formatMs(scan.detectWaitMs)}`,
+          `デコード: ${decoderPaths} / ${scan.attemptCount || 0}回 / 平均${formatMs(scan.decodeAverageMs)} / 最大${formatMs(scan.decodeMaxMs)} / 最終${formatMs(scan.decodeLastMs)}`,
+          `試行間隔: 平均${formatMs(scan.intervalAverageMs)} / 最大${formatMs(scan.intervalMaxMs)}`,
+          `即時表示: ${formatMs(scan.feedbackPaintMs)}`,
+          `往復: ${formatMs(api.fetchRttMs)}（header ${formatMs(api.headersMs)} / body ${formatMs(api.bodyDownloadMs)}）`,
+          `サーバー内部: ${formatMs(api.serverTotalMs)}`,
+          `通信・起動等: ${formatMs(api.transportOverheadMs)}`,
+          `JSON+描画: ${formatMs(result.jsonAndRenderMs)}`,
+          `全体: ${formatMs(result.totalMs)}`,
+          `ページ経過: ${formatMs(api.pageAgeMs)} / 前回完了から: ${formatMs(api.previousRequestGapMs)}`,
+          `redirect: ${api.redirected ? 'yes' : 'no'} / final: ${api.finalHost || '—'}`,
+          `カメラ: getUserMedia ${formatMs(camera.getUserMediaMs)} / play ${formatMs(camera.videoPlayMs)} / detector ${formatMs(camera.detectorInitMs)} / ready ${formatMs(camera.cameraReadyMs)} / 初回試行可能 ${formatMs(camera.firstScanEligibleMs)}`,
+          `映像: ${settings.width || scan.sourceWidth || 0}x${settings.height || scan.sourceHeight || 0} @${settings.frameRate || '—'}fps → ROI ${scan.sourceSide || 0}px → canvas ${scan.canvasSide || 0}px`,
+          `BarcodeDetector: API ${camera.barcodeDetectorApiAvailable ? 'yes' : 'no'} / QR ${camera.barcodeDetectorQrSupported ? 'yes' : 'no'}`,
+          `端末: ${camera.platform || '—'} / ${camera.userAgent || '—'}`
+        ];
+
+        const marks = result.serverMarks || [];
+        if (marks.length) {
+          lines.push('--- server marks ---');
+          let previousAt = 0;
+          marks.forEach(mark => {
+            const at = Number(mark.at) || 0;
+            lines.push(`${mark.label}: +${Math.max(0, at - previousAt)}ms (${at}ms)`);
+            previousAt = at;
+          });
+        }
+
+        if (performanceHistory.length > 1) {
+          lines.push('--- 直近3回 ---');
+          performanceHistory.forEach(item => {
+            lines.push(`#${item.sequence} 検出${formatMs(item.scan && item.scan.detectWaitMs)} / 往復${formatMs(item.api && item.api.fetchRttMs)} / server${formatMs(item.api && item.api.serverTotalMs)} / 全体${formatMs(item.totalMs)}`);
+          });
+        }
+        perfOutput.textContent = lines.join('\n');
+      }
+
+      function setScanFeedback(active) {
+        scanFrameElement.classList.toggle('detected', active);
+        document.getElementById('camera-subtitle').textContent = active
+          ? 'QR読取済み・照会中…'
+          : (currentMode === 'shipping' ? 'QRを順番にスキャンしてください' : 'QRをかざしてください');
+      }
+
+      async function fetchJsonWithPerformance(action, body, scanMetrics) {
+        const measurement = {
+          action,
+          scanMetrics,
+          camera: cameraPerformanceSnapshot(),
+          fetchStartedAt: nowMs(),
+          pageAgeMs: nowMs() - PAGE_STARTED_AT,
+          previousRequestGapMs: lastRequestCompletedAt === null ? null : nowMs() - lastRequestCompletedAt,
+          headersMs: null,
+          bodyDownloadMs: null,
+          fetchRttMs: null,
+          jsonParseMs: null,
+          jsonReadyAt: null,
+          redirected: false,
+          finalHost: '',
+          serverTotalMs: null,
+          transportOverheadMs: null,
+          serverMarks: []
+        };
+
+        try {
+          const response = await fetch(GAS_URL, { method: 'POST', body });
+          const headersAt = nowMs();
+          measurement.headersMs = headersAt - measurement.fetchStartedAt;
+          measurement.redirected = response.redirected;
+          try { measurement.finalHost = new URL(response.url).host; } catch (error) { measurement.finalHost = ''; }
+          const responseText = await response.text();
+          const bodyAt = nowMs();
+          measurement.bodyDownloadMs = bodyAt - headersAt;
+          measurement.fetchRttMs = bodyAt - measurement.fetchStartedAt;
+          const jsonStartedAt = nowMs();
+          const data = JSON.parse(responseText);
+          measurement.jsonReadyAt = nowMs();
+          measurement.jsonParseMs = measurement.jsonReadyAt - jsonStartedAt;
+          if (data && data._perf) {
+            measurement.serverTotalMs = Number(data._perf.total_ms);
+            measurement.serverMarks = Array.isArray(data._perf.marks) ? data._perf.marks : [];
+            if (Number.isFinite(measurement.serverTotalMs)) {
+              measurement.transportOverheadMs = Math.max(0, measurement.fetchRttMs - measurement.serverTotalMs);
+            }
+          }
+          return { data, measurement };
+        } catch (error) {
+          const failedAt = nowMs();
+          measurement.fetchRttMs = failedAt - measurement.fetchStartedAt;
+          measurement.jsonReadyAt = failedAt;
+          error.performanceMeasurement = measurement;
+          throw error;
+        }
+      }
+
+      function finishRequestPerformance(measurement, outcome) {
+        if (!measurement) return;
+        waitForNextPaint().then(paintedAt => {
+          const jsonAndRenderMs = measurement.jsonReadyAt ? paintedAt - measurement.jsonReadyAt + (measurement.jsonParseMs || 0) : null;
+          const scanStartedAt = measurement.scanMetrics && measurement.scanMetrics.startedAt;
+          const totalStartedAt = Number.isFinite(scanStartedAt) ? scanStartedAt : measurement.fetchStartedAt;
+          const result = {
+            sequence: ++performanceSequence,
+            action: measurement.action,
+            outcome,
+            camera: measurement.camera,
+            scan: summarizeScanPerformance(measurement.scanMetrics),
+            api: {
+              headersMs: measurement.headersMs,
+              bodyDownloadMs: measurement.bodyDownloadMs,
+              fetchRttMs: measurement.fetchRttMs,
+              redirected: measurement.redirected,
+              finalHost: measurement.finalHost,
+              serverTotalMs: measurement.serverTotalMs,
+              transportOverheadMs: measurement.transportOverheadMs,
+              pageAgeMs: measurement.pageAgeMs,
+              previousRequestGapMs: measurement.previousRequestGapMs
+            },
+            serverMarks: measurement.serverMarks,
+            jsonAndRenderMs,
+            totalMs: Number.isFinite(totalStartedAt) ? paintedAt - totalStartedAt : null
+          };
+          performanceHistory.unshift(result);
+          performanceHistory = performanceHistory.slice(0, 3);
+          lastRequestCompletedAt = paintedAt;
+          renderPerformancePanel();
+        });
+      }
 
       window.handleSignIn = function(response) {
         if (!response || !response.credential) {
@@ -190,7 +465,9 @@
 
       function stopCamera() {
         scanning = false;
+        requestInFlight = false;
         scanGeneration += 1;
+        setScanFeedback(false);
         if (scanTimer !== null) {
           clearTimeout(scanTimer);
           scanTimer = null;
@@ -202,6 +479,7 @@
         }
         video.srcObject = null;
         canvasSide = 0;
+        activeScanPerformance = null;
       }
 
       function showSignIn(message) {
@@ -290,8 +568,11 @@
 
       function returnToCamera() {
         requestInFlight = false;
+        setScanFeedback(false);
         showScreen('camera-screen');
-        if (!scanning) { scanning = true; scheduleScan(); }
+        beginScanCycle();
+        if (!scanning) scanning = true;
+        scheduleScan();
       }
 
       function showError(message) {
@@ -305,12 +586,34 @@
         try {
           stopCamera();
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('このブラウザではカメラを利用できません。');
+          const cameraStartedAt = nowMs();
+          cameraPerformance = {
+            startedAt: cameraStartedAt,
+            getUserMediaMs: null,
+            videoPlayMs: null,
+            detectorInitMs: null,
+            cameraReadyMs: null,
+            firstScanEligibleMs: null,
+            barcodeDetectorApiAvailable: 'BarcodeDetector' in window,
+            barcodeDetectorQrSupported: false,
+            userAgent: navigator.userAgent || '',
+            platform: navigator.platform || '',
+            settings: {}
+          };
+          const mediaStartedAt = nowMs();
           stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+          cameraPerformance.getUserMediaMs = nowMs() - mediaStartedAt;
           video.srcObject = stream;
+          const playStartedAt = nowMs();
           await video.play();
+          cameraPerformance.videoPlayMs = nowMs() - playStartedAt;
           await initializeBarcodeDetector();
+          cameraPerformance.settings = cameraSettingsSnapshot();
+          cameraPerformance.cameraReadyMs = nowMs() - cameraStartedAt;
           scanning = true;
           showScreen('camera-screen');
+          beginScanCycle();
+          renderPerformancePanel();
           scheduleScan();
         } catch (error) {
           showError('カメラを起動できませんでした。\nブラウザのカメラ権限を許可して再試行してください。');
@@ -318,15 +621,22 @@
       }
 
       async function initializeBarcodeDetector() {
+        const detectorStartedAt = nowMs();
         barcodeDetector = null;
-        if (!('BarcodeDetector' in window)) return;
+        if (!('BarcodeDetector' in window)) {
+          if (cameraPerformance) cameraPerformance.detectorInitMs = nowMs() - detectorStartedAt;
+          return;
+        }
         try {
           const formats = await window.BarcodeDetector.getSupportedFormats();
           if (formats.includes('qr_code')) {
             barcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
+            if (cameraPerformance) cameraPerformance.barcodeDetectorQrSupported = true;
           }
         } catch (error) {
           barcodeDetector = null;
+        } finally {
+          if (cameraPerformance) cameraPerformance.detectorInitMs = nowMs() - detectorStartedAt;
         }
       }
 
@@ -343,11 +653,17 @@
           return;
         }
 
+        if (cameraPerformance && cameraPerformance.firstScanEligibleMs === null) {
+          cameraPerformance.firstScanEligibleMs = nowMs() - cameraPerformance.startedAt;
+        }
+
         decodeInFlight = true;
         const generation = scanGeneration;
+        const attemptStartedAt = nowMs();
         try {
-          const value = await decodeFrame();
-          if (generation === scanGeneration && value) handleQr(value);
+          const result = await decodeFrame();
+          recordScanAttempt(attemptStartedAt, nowMs() - attemptStartedAt, result);
+          if (generation === scanGeneration && result.value) handleQr(result.value);
         } finally {
           if (generation === scanGeneration) {
             decodeInFlight = false;
@@ -358,7 +674,7 @@
 
       async function decodeFrame() {
         const sourceSide = Math.floor(Math.min(video.videoWidth, video.videoHeight) * SCAN_ROI_FRACTION);
-        if (!sourceSide) return '';
+        if (!sourceSide) return { value: '', decoderPath: 'none', sourceSide: 0, canvasSide: 0 };
         const targetSide = Math.min(640, sourceSide);
         if (canvasSide !== targetSide) {
           canvas.width = targetSide;
@@ -372,27 +688,51 @@
         if (barcodeDetector) {
           try {
             const detected = await barcodeDetector.detect(canvas);
-            if (detected.length && detected[0].rawValue) return detected[0].rawValue;
-            return '';
+            return {
+              value: detected.length && detected[0].rawValue ? detected[0].rawValue : '',
+              decoderPath: 'BarcodeDetector',
+              sourceSide,
+              canvasSide: targetSide
+            };
           } catch (error) {
             barcodeDetector = null;
+            if (cameraPerformance) cameraPerformance.barcodeDetectorQrSupported = false;
           }
         }
 
         const image = context.getImageData(0, 0, canvasSide, canvasSide);
         const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'dontInvert' });
-        return code && code.data ? code.data : '';
+        return {
+          value: code && code.data ? code.data : '',
+          decoderPath: 'jsQR',
+          sourceSide,
+          canvasSide: targetSide
+        };
       }
 
-      function handleQr(rawValue) {
+      async function handleQr(rawValue) {
         const orderId = String(rawValue).trim();
         const now = Date.now();
         if (!orderId || requestInFlight || (orderId === lastScannedValue && now - lastScannedAt < 2500)) return;
         lastScannedValue = orderId;
         lastScannedAt = now;
         requestInFlight = true;
-        if (currentMode === 'shipping') submitShipPrepScan(orderId);
-        else submitPrint(orderId);
+        const generation = scanGeneration;
+        const scanMetrics = activeScanPerformance;
+        const feedbackStartedAt = nowMs();
+        if (scanMetrics) {
+          scanMetrics.detectedAt = feedbackStartedAt;
+          scanMetrics.detectWaitMs = feedbackStartedAt - scanMetrics.startedAt;
+        }
+        setScanFeedback(true);
+        if (typeof navigator.vibrate === 'function') {
+          try { navigator.vibrate(50); } catch (error) { /* 非対応端末では視覚表示のみ */ }
+        }
+        const paintedAt = await waitForNextPaint();
+        if (scanMetrics) scanMetrics.feedbackPaintMs = paintedAt - feedbackStartedAt;
+        if (generation !== scanGeneration || !requestInFlight) return;
+        if (currentMode === 'shipping') submitShipPrepScan(orderId, scanMetrics);
+        else submitPrint(orderId, scanMetrics);
       }
 
       function handleAuthError(data) {
@@ -407,34 +747,52 @@
         return false;
       }
 
-      async function submitPrint(orderId) {
+      async function submitPrint(orderId, scanMetrics) {
+        let measurement = null;
         try {
           const body = new URLSearchParams({ payload: JSON.stringify({ action: 'print', order_id: orderId, id_token: idToken }) });
-          const response = await fetch(GAS_URL, { method: 'POST', body });
-          const data = await response.json();
-          if (handleAuthError(data)) return;
-          if (!data.ok) { showToast(data.error || '処理に失敗しました。', 'error'); returnToCamera(); return; }
+          const result = await fetchJsonWithPerformance('print', body, scanMetrics);
+          const data = result.data;
+          measurement = result.measurement;
+          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
+          if (!data.ok) {
+            showToast(data.error || '処理に失敗しました。', 'error');
+            returnToCamera();
+            finishRequestPerformance(measurement, 'api_error');
+            return;
+          }
           const label = data.store_label ? `（${data.store_label}）` : '';
           const duplicate = data.already_tagged ? '印刷済みです。' : '印刷タグを付けました。';
           showToast(`${data.order_number || data.order_id}${label}\n${duplicate}`, data.already_tagged ? 'warning' : 'success');
           returnToCamera();
+          finishRequestPerformance(measurement, data.already_tagged ? 'already_tagged' : 'success');
         } catch (error) {
+          measurement = error.performanceMeasurement || measurement;
           showToast('通信に失敗しました。もう一度お試しください。', 'error');
           returnToCamera();
+          finishRequestPerformance(measurement, 'network_error');
         }
       }
 
-      async function submitShipPrepScan(orderId) {
+      async function submitShipPrepScan(orderId, scanMetrics) {
+        let measurement = null;
         try {
           const body = new URLSearchParams({ payload: JSON.stringify({ action: 'ship_prep_scan', order_id: orderId, id_token: idToken }) });
-          const response = await fetch(GAS_URL, { method: 'POST', body });
-          const data = await response.json();
-          if (handleAuthError(data)) return;
-          if (!data.ok) { showToast(data.error || '注文を取得できませんでした。', 'error'); returnToCamera(); return; }
+          const result = await fetchJsonWithPerformance('ship_prep_scan', body, scanMetrics);
+          const data = result.data;
+          measurement = result.measurement;
+          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
+          if (!data.ok) {
+            showToast(data.error || '注文を取得できませんでした。', 'error');
+            returnToCamera();
+            finishRequestPerformance(measurement, 'api_error');
+            return;
+          }
           if (shippingItems.some(item => item.order_id === data.order_id)) {
             requestInFlight = false;
             showToast('この注文は既に追加済みです。', 'warning');
             returnToCamera();
+            finishRequestPerformance(measurement, 'duplicate');
             return;
           }
           if (data.is_team_pickup) {
@@ -442,14 +800,18 @@
             scanning = false;
             requestInFlight = false;
             showTeamDestination(data);
+            finishRequestPerformance(measurement, 'destination_required');
             return;
           }
           addShippingItem(data, data.shipping_address);
           showToast(`${data.order_number || data.order_id}を一覧に追加しました`, 'success');
           returnToCamera();
+          finishRequestPerformance(measurement, 'success');
         } catch (error) {
+          measurement = error.performanceMeasurement || measurement;
           showToast('通信に失敗しました。もう一度お試しください。', 'error');
           returnToCamera();
+          finishRequestPerformance(measurement, 'network_error');
         }
       }
 
@@ -552,12 +914,21 @@
         scanning = false;
         requestInFlight = true;
         showScreen('loading-screen');
+        let measurement = null;
         try {
           const body = new URLSearchParams({ payload: JSON.stringify({ action: 'ship_prep_finalize', id_token: idToken, carrier, items: shippingItems }) });
-          const response = await fetch(GAS_URL, { method: 'POST', body });
-          const data = await response.json();
-          if (handleAuthError(data)) return;
-          if (!data.ok) { requestInFlight = false; showToast(data.error || '発送準備を確定できませんでした。', 'error'); updateCameraMode(); returnToCamera(); return; }
+          const result = await fetchJsonWithPerformance('ship_prep_finalize', body, null);
+          const data = result.data;
+          measurement = result.measurement;
+          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
+          if (!data.ok) {
+            requestInFlight = false;
+            showToast(data.error || '発送準備を確定できませんでした。', 'error');
+            updateCameraMode();
+            returnToCamera();
+            finishRequestPerformance(measurement, 'api_error');
+            return;
+          }
           const warnings = Array.isArray(data.warnings) ? data.warnings : [];
           const warningList = document.getElementById('shipping-warnings');
           warningList.textContent = '';
@@ -565,11 +936,14 @@
           document.getElementById('complete-message').textContent = `Dropboxに保存しました（${data.item_count || shippingItems.length}件・${data.group_count || 0}個口）`;
           requestInFlight = false;
           showScreen('complete-screen');
+          finishRequestPerformance(measurement, 'success');
         } catch (error) {
+          measurement = error.performanceMeasurement || measurement;
           requestInFlight = false;
           showToast('通信に失敗しました。もう一度お試しください。', 'error');
           updateCameraMode();
           returnToCamera();
+          finishRequestPerformance(measurement, 'network_error');
         }
       }
 
@@ -591,6 +965,10 @@
       document.getElementById('complete-next-button').addEventListener('click', () => startShippingMode(carrier));
       document.getElementById('install-hint-close').addEventListener('click', () => {
         document.getElementById('install-hint').classList.remove('show');
+      });
+      perfToggle.addEventListener('change', () => {
+        debugPerformanceEnabled = perfToggle.checked;
+        renderPerformancePanel();
       });
       initializeGoogleSignIn();
     })();
