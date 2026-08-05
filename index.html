@@ -38,6 +38,7 @@
     .hint { position:absolute; bottom:calc(36px + env(safe-area-inset-bottom)); padding:10px 18px; border-radius:999px; background:#0009; color:#fff; font-size:14px; }
     #loading-screen, #error-screen, #forbidden-screen { padding:28px; text-align:center; background:var(--bg); }
     #signin-screen { padding:28px; text-align:center; background:var(--bg); }
+    #mode-screen, #carrier-screen, #team-destination-screen, #complete-screen { padding:28px; text-align:center; background:var(--bg); }
     .card { width:min(100%,420px); padding:28px 22px; border:1px solid #2b3248; border-radius:20px; background:var(--surface); }
     h1 { margin:0 0 12px; font-size:22px; } p { margin:8px 0; color:var(--muted); line-height:1.7; white-space:pre-wrap; }
     .spinner { width:42px; height:42px; margin:0 auto 18px; border:4px solid #343b52; border-top-color:var(--mode-color); border-radius:50%; animation:spin .8s linear infinite; }
@@ -52,6 +53,24 @@
     #install-hint button { flex:0 0 auto; width:auto; margin:0; padding:8px 12px; background:#303951; color:var(--text); font-size:13px; }
     #canvas { display:none; }
     #g_id_signin { display:flex; justify-content:center; margin-top:22px; min-height:44px; }
+    .choice-list { display:flex; flex-direction:column; gap:12px; margin-top:22px; }
+    .choice-button { margin:0; color:#fff; background:#2b3550; border:1px solid #52617f; }
+    .choice-button.ship { background:#0f766e; border-color:#2dd4bf; }
+    .ship-controls { position:absolute; left:12px; right:12px; bottom:calc(16px + env(safe-area-inset-bottom)); z-index:12; padding:12px; border:1px solid #2dd4bf88; border-radius:16px; background:#082f2eef; pointer-events:auto; }
+    .ship-summary { display:flex; justify-content:space-between; align-items:center; gap:10px; color:#ccfbf1; font-size:13px; }
+    .ship-summary strong { font-size:18px; }
+    .ship-list { max-height:130px; overflow:auto; margin-top:8px; display:flex; flex-direction:column; gap:5px; text-align:left; }
+    .ship-item { display:flex; align-items:center; gap:8px; padding:7px 9px; border-radius:8px; background:#134e4a; font-size:12px; }
+    .ship-item span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .package-count { width:48px; padding:5px; border:1px solid #5eead4; border-radius:6px; background:#042f2e; color:#fff; text-align:center; }
+    .ship-finalize { margin-top:10px; padding:10px; background:#14b8a6; color:#042f2e; }
+    .address-form { display:grid; gap:9px; margin-top:14px; text-align:left; }
+    .address-form label { color:var(--muted); font-size:12px; }
+    .address-form input { width:100%; padding:10px; border:1px solid #52617f; border-radius:8px; background:#0e1320; color:#fff; font:inherit; }
+    .address-actions { display:flex; gap:9px; }
+    .address-actions button { flex:1; }
+    .warning-list { margin:16px 0 0; padding:12px 14px; border:1px solid var(--warn); border-radius:10px; color:#ffe3a3; text-align:left; font-size:13px; line-height:1.6; }
+    .warning-list:empty { display:none; }
   </style>
 </head>
 <body>
@@ -62,17 +81,57 @@
       <div id="g_id_signin" class="g_id_signin"></div>
     </div>
   </section>
+  <section id="mode-screen" class="screen" aria-label="モード選択">
+    <div class="card"><h1>処理モードを選択</h1><p>実行する作業を選んでください。</p>
+      <div class="choice-list">
+        <button id="print-mode-button" class="choice-button" type="button">印刷タグ付け</button>
+        <button id="ship-mode-button" class="choice-button ship" type="button">発送準備</button>
+      </div>
+    </div>
+  </section>
+  <section id="carrier-screen" class="screen" aria-label="発送方法選択">
+    <div class="card"><h1>発送方法を選択</h1><p>今回の発送準備で使う方法を選んでください。</p>
+      <div class="choice-list">
+        <button id="sagawa-button" class="choice-button ship" type="button">佐川急便（宅配便）</button>
+        <button id="clickpost-button" class="choice-button ship" type="button">クリックポスト</button>
+        <button id="carrier-back-button" class="choice-button" type="button">モード選択へ戻る</button>
+      </div>
+    </div>
+  </section>
   <section id="camera-screen" class="screen" aria-label="印刷モード">
     <video id="video" autoplay playsinline muted></video>
     <div class="camera-overlay">
-      <div class="topbar"><span class="mode-dot"></span><span class="title">印刷モード</span><span class="subtitle">QRをかざしてください</span></div>
+      <div class="topbar"><span class="mode-dot"></span><span id="camera-title" class="title">印刷モード</span><span id="camera-subtitle" class="subtitle">QRをかざしてください</span></div>
       <div class="scan-frame"><span class="corner br"></span><span class="corner bl"></span><span class="scan-line"></span></div>
-      <div class="hint">スキャンすると自動で印刷タグを付けます</div>
+      <div id="camera-hint" class="hint">スキャンすると自動で印刷タグを付けます</div>
+      <div id="ship-controls" class="ship-controls" hidden>
+        <div class="ship-summary"><span><span id="carrier-label">発送準備</span> / スキャン済み</span><strong id="ship-count">0件</strong></div>
+        <div id="ship-list" class="ship-list"></div>
+        <button id="ship-finalize-button" class="ship-finalize" type="button">ここで締める</button>
+      </div>
     </div>
   </section>
   <section id="loading-screen" class="screen"><div class="card"><div class="spinner"></div><p id="loading-message">カメラを準備しています…</p></div></section>
   <section id="error-screen" class="screen"><div class="card"><h1>処理できませんでした</h1><p id="error-message"></p><button id="retry-button" type="button">カメラに戻る</button></div></section>
   <section id="forbidden-screen" class="screen"><div class="card"><h1>アクセスできません</h1><p id="forbidden-message">許可されたGoogleアカウントでサインインしてください。</p><button id="forbidden-button" type="button">サインイン画面へ戻る</button></div></section>
+  <section id="team-destination-screen" class="screen" aria-label="チーム代表者宛先選択">
+    <div class="card"><h1>発送先を選択</h1><p id="team-order-message"></p>
+      <div class="choice-list">
+        <button id="shopify-destination-button" class="choice-button ship" type="button">Shopify記載の宛先に送る</button>
+        <button id="representative-destination-button" class="choice-button ship" type="button">チーム代表者宛に送る</button>
+      </div>
+      <div id="representative-form" class="address-form" hidden>
+        <label>郵便番号<input id="team-postal-code" autocomplete="postal-code"></label>
+        <label>住所<input id="team-address" autocomplete="street-address"></label>
+        <label>氏名<input id="team-name" autocomplete="name"></label>
+        <label>電話番号<input id="team-phone" type="tel" autocomplete="tel"></label>
+        <div class="address-actions"><button id="team-address-cancel" class="choice-button" type="button">戻る</button><button id="team-address-save" class="choice-button ship" type="button">この宛先を使う</button></div>
+      </div>
+    </div>
+  </section>
+  <section id="complete-screen" class="screen" aria-label="発送準備完了">
+    <div class="card"><h1>発送準備完了</h1><p id="complete-message"></p><div id="shipping-warnings" class="warning-list"></div><button id="complete-next-button" class="choice-button ship" type="button">発送準備を続ける</button></div>
+  </section>
   <canvas id="canvas"></canvas><div id="toast" role="status" aria-live="polite"></div>
   <aside id="install-hint" aria-label="ホーム画面への追加案内">
     <p>共有・メニューボタンから「ホーム画面に追加」を選ぶと、次回からすぐ起動できます。</p>
@@ -94,6 +153,11 @@
       let lastScannedAt = 0;
       let toastTimer = null;
       let idToken = '';
+      let currentMode = '';
+      let carrier = '';
+      let shippingItems = [];
+      let pendingShipScan = null;
+      let lastTeamDestination = null;
 
       window.handleSignIn = function(response) {
         if (!response || !response.credential) {
@@ -101,7 +165,7 @@
           return;
         }
         idToken = response.credential;
-        startCamera().then(maybeShowInstallHint);
+        showModeSelect();
       };
 
       function showScreen(id) {
@@ -139,6 +203,44 @@
         idToken = '';
         document.getElementById('forbidden-message').textContent = 'このアカウントは許可リストに登録されていません。許可された別のGoogleアカウントでサインインしてください。';
         showScreen('forbidden-screen');
+      }
+
+      function showModeSelect() {
+        stopCamera();
+        currentMode = '';
+        showScreen('mode-screen');
+      }
+
+      function updateCameraMode() {
+        const shipping = currentMode === 'shipping';
+        document.getElementById('camera-title').textContent = shipping ? '発送準備' : '印刷モード';
+        document.getElementById('camera-subtitle').textContent = shipping ? 'QRを順番にスキャンしてください' : 'QRをかざしてください';
+        document.getElementById('camera-hint').textContent = shipping ? 'スキャンすると一覧に追加されます' : 'スキャンすると自動で印刷タグを付けます';
+        document.getElementById('ship-controls').hidden = !shipping;
+        if (shipping) {
+          document.getElementById('carrier-label').textContent = carrier === 'sagawa' ? '佐川急便' : 'クリックポスト';
+          renderShippingList();
+        }
+      }
+
+      function startPrintMode() {
+        currentMode = 'print';
+        updateCameraMode();
+        startCamera().then(maybeShowInstallHint);
+      }
+
+      function showCarrierSelect() {
+        stopCamera();
+        showScreen('carrier-screen');
+      }
+
+      function startShippingMode(selectedCarrier) {
+        currentMode = 'shipping';
+        carrier = selectedCarrier;
+        shippingItems = [];
+        pendingShipScan = null;
+        updateCameraMode();
+        startCamera().then(maybeShowInstallHint);
       }
 
       function initializeGoogleSignIn(attempt = 0) {
@@ -220,7 +322,20 @@
         lastScannedValue = orderId;
         lastScannedAt = now;
         requestInFlight = true;
-        submitPrint(orderId);
+        if (currentMode === 'shipping') submitShipPrepScan(orderId);
+        else submitPrint(orderId);
+      }
+
+      function handleAuthError(data) {
+        if (data.error_code === 'TOKEN_MISSING' || data.error_code === 'TOKEN_INVALID') {
+          showSignIn('サインインの有効期限が切れました。もう一度サインインしてください。');
+          return true;
+        }
+        if (data.error_code === 'FORBIDDEN') {
+          showForbidden();
+          return true;
+        }
+        return false;
       }
 
       async function submitPrint(orderId) {
@@ -228,11 +343,7 @@
           const body = new URLSearchParams({ payload: JSON.stringify({ action: 'print', order_id: orderId, id_token: idToken }) });
           const response = await fetch(GAS_URL, { method: 'POST', body });
           const data = await response.json();
-          if (data.error_code === 'TOKEN_MISSING' || data.error_code === 'TOKEN_INVALID') {
-            showSignIn('サインインの有効期限が切れました。もう一度サインインしてください。');
-            return;
-          }
-          if (data.error_code === 'FORBIDDEN') { showForbidden(); return; }
+          if (handleAuthError(data)) return;
           if (!data.ok) { showToast(data.error || '処理に失敗しました。', 'error'); returnToCamera(); return; }
           const label = data.store_label ? `（${data.store_label}）` : '';
           const duplicate = data.already_tagged ? '印刷済みです。' : '印刷タグを付けました。';
@@ -244,8 +355,146 @@
         }
       }
 
+      async function submitShipPrepScan(orderId) {
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'ship_prep_scan', order_id: orderId, id_token: idToken }) });
+          const response = await fetch(GAS_URL, { method: 'POST', body });
+          const data = await response.json();
+          if (handleAuthError(data)) return;
+          if (!data.ok) { showToast(data.error || '注文を取得できませんでした。', 'error'); returnToCamera(); return; }
+          if (data.is_team_pickup) {
+            pendingShipScan = data;
+            scanning = false;
+            requestInFlight = false;
+            showTeamDestination(data);
+            return;
+          }
+          addShippingItem(data, data.shipping_address);
+          showToast(`${data.order_number || data.order_id}を一覧に追加しました`, 'success');
+          returnToCamera();
+        } catch (error) {
+          showToast('通信に失敗しました。もう一度お試しください。', 'error');
+          returnToCamera();
+        }
+      }
+
+      function addShippingItem(data, destination) {
+        shippingItems.push({
+          order_id: data.order_id,
+          order_number: data.order_number,
+          store: data.store,
+          package_count: 1,
+          destination: { ...destination }
+        });
+        renderShippingList();
+      }
+
+      function renderShippingList() {
+        const list = document.getElementById('ship-list');
+        list.textContent = '';
+        document.getElementById('ship-count').textContent = `${shippingItems.length}件`;
+        shippingItems.forEach((item, index) => {
+          const row = document.createElement('div');
+          row.className = 'ship-item';
+          const label = document.createElement('span');
+          label.textContent = `${item.order_number || item.order_id} / ${item.destination.name || '宛先未設定'}`;
+          const count = document.createElement('input');
+          count.className = 'package-count';
+          count.type = 'number';
+          count.min = '1';
+          count.max = '99';
+          count.value = String(item.package_count || 1);
+          count.setAttribute('aria-label', '個口数');
+          count.addEventListener('change', () => {
+            item.package_count = Math.max(1, Number.parseInt(count.value, 10) || 1);
+            count.value = String(item.package_count);
+          });
+          row.append(label, count);
+          list.appendChild(row);
+        });
+      }
+
+      function showTeamDestination(data) {
+        document.getElementById('team-order-message').textContent = `${data.order_number || data.order_id}：発送先を選択してください。`;
+        document.getElementById('representative-form').hidden = true;
+        showScreen('team-destination-screen');
+      }
+
+      function showRepresentativeForm() {
+        const form = document.getElementById('representative-form');
+        form.hidden = false;
+        const value = lastTeamDestination || {};
+        document.getElementById('team-postal-code').value = value.postal_code || '';
+        document.getElementById('team-address').value = value.address1 || '';
+        document.getElementById('team-name').value = value.name || '';
+        document.getElementById('team-phone').value = value.phone || '';
+      }
+
+      function useShopifyDestination() {
+        if (!pendingShipScan) return;
+        addShippingItem(pendingShipScan, pendingShipScan.shipping_address);
+        pendingShipScan = null;
+        returnToCamera();
+      }
+
+      function useRepresentativeDestination() {
+        const postalCode = document.getElementById('team-postal-code').value.trim();
+        const address = document.getElementById('team-address').value.trim();
+        const name = document.getElementById('team-name').value.trim();
+        const phone = document.getElementById('team-phone').value.trim();
+        if (!postalCode || !address || !name || !phone) {
+          showToast('郵便番号・住所・氏名・電話番号を入力してください。', 'error');
+          return;
+        }
+        const destination = { postal_code: postalCode, prefecture: '', city: '', address1: address, address2: '', name, company: '', phone };
+        lastTeamDestination = destination;
+        addShippingItem(pendingShipScan, destination);
+        pendingShipScan = null;
+        returnToCamera();
+      }
+
+      async function finalizeShipping() {
+        if (!shippingItems.length) { showToast('発送準備の一覧が空です。', 'error'); return; }
+        scanning = false;
+        requestInFlight = true;
+        showScreen('loading-screen');
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'ship_prep_finalize', id_token: idToken, carrier, items: shippingItems }) });
+          const response = await fetch(GAS_URL, { method: 'POST', body });
+          const data = await response.json();
+          if (handleAuthError(data)) return;
+          if (!data.ok) { requestInFlight = false; showToast(data.error || '発送準備を確定できませんでした。', 'error'); updateCameraMode(); returnToCamera(); return; }
+          const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+          const warningList = document.getElementById('shipping-warnings');
+          warningList.textContent = '';
+          warnings.forEach(warning => { const li = document.createElement('div'); li.textContent = `・${warning}`; warningList.appendChild(li); });
+          document.getElementById('complete-message').textContent = `Dropboxに保存しました（${data.item_count || shippingItems.length}件・${data.group_count || 0}個口）`;
+          requestInFlight = false;
+          showScreen('complete-screen');
+        } catch (error) {
+          requestInFlight = false;
+          showToast('通信に失敗しました。もう一度お試しください。', 'error');
+          updateCameraMode();
+          returnToCamera();
+        }
+      }
+
+      document.getElementById('print-mode-button').addEventListener('click', startPrintMode);
+      document.getElementById('ship-mode-button').addEventListener('click', showCarrierSelect);
+      document.getElementById('sagawa-button').addEventListener('click', () => startShippingMode('sagawa'));
+      document.getElementById('clickpost-button').addEventListener('click', () => startShippingMode('clickpost'));
+      document.getElementById('carrier-back-button').addEventListener('click', showModeSelect);
       document.getElementById('retry-button').addEventListener('click', startCamera);
       document.getElementById('forbidden-button').addEventListener('click', () => showSignIn());
+      document.getElementById('shopify-destination-button').addEventListener('click', useShopifyDestination);
+      document.getElementById('representative-destination-button').addEventListener('click', showRepresentativeForm);
+      document.getElementById('team-address-cancel').addEventListener('click', () => {
+        pendingShipScan = null;
+        returnToCamera();
+      });
+      document.getElementById('team-address-save').addEventListener('click', useRepresentativeDestination);
+      document.getElementById('ship-finalize-button').addEventListener('click', finalizeShipping);
+      document.getElementById('complete-next-button').addEventListener('click', () => startShippingMode(carrier));
       document.getElementById('install-hint-close').addEventListener('click', () => {
         document.getElementById('install-hint').classList.remove('show');
       });
