@@ -169,6 +169,8 @@
       let requestInFlight = false;
       let lastScannedValue = '';
       let lastScannedAt = 0;
+      let lastRejectedValue = '';
+      let lastRejectedAt = 0;
       let toastTimer = null;
       let idToken = '';
       let currentMode = '';
@@ -747,7 +749,16 @@
       async function handleQr(rawValue) {
         const orderId = String(rawValue).trim();
         const now = Date.now();
-        if (!orderId || requestInFlight || (orderId === lastScannedValue && now - lastScannedAt < 2500)) return;
+        if (!orderId) return;
+        if (!/^\d+$/.test(orderId)) {
+          if (orderId !== lastRejectedValue || now - lastRejectedAt >= 2500) {
+            lastRejectedValue = orderId;
+            lastRejectedAt = now;
+            showToast('注文書QRを枠の中央に合わせてください。', 'warning');
+          }
+          return;
+        }
+        if (requestInFlight || (orderId === lastScannedValue && now - lastScannedAt < 2500)) return;
         lastScannedValue = orderId;
         lastScannedAt = now;
         requestInFlight = true;
