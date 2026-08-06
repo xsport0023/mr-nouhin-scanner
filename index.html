@@ -66,6 +66,15 @@
     #perf-panel strong { display:block; margin-bottom:6px; color:#fff; font-size:13px; }
     #perf-output { margin:0; color:#dce4ff; font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-word; }
     .choice-button.ship { background:#0f766e; border-color:#2dd4bf; }
+    .print-controls { position:absolute; left:12px; right:12px; bottom:calc(76px + env(safe-area-inset-bottom)); z-index:12; padding:10px 12px; border:1px solid #e879f988; border-radius:14px; background:#24102bef; pointer-events:auto; text-align:left; }
+    .print-summary { color:#fce7ff; font-size:13px; line-height:1.5; }
+    .print-summary strong { color:#fff; }
+    .print-complete { margin-top:5px; color:#86efac; font-size:12px; font-weight:700; }
+    .print-errors { display:flex; flex-direction:column; gap:6px; max-height:120px; margin-top:7px; overflow:auto; }
+    .print-errors:empty { display:none; }
+    .print-error-row { display:grid; grid-template-columns:1fr auto auto; align-items:center; gap:6px; padding:7px 8px; border:1px solid #ff626288; border-radius:8px; background:#3a151bee; color:#ffe1e1; font-size:11px; }
+    .print-error-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .print-error-action { width:auto; margin:0; padding:6px 8px; border:1px solid #ff9d9d; background:#592129; color:#fff; font-size:11px; }
     .ship-controls { position:absolute; left:12px; right:12px; bottom:calc(16px + env(safe-area-inset-bottom)); z-index:12; padding:12px; border:1px solid #2dd4bf88; border-radius:16px; background:#082f2eef; pointer-events:auto; }
     .ship-summary { display:flex; justify-content:space-between; align-items:center; gap:10px; color:#ccfbf1; font-size:13px; }
     .ship-summary strong { font-size:18px; }
@@ -117,6 +126,11 @@
       <div id="scan-frame" class="scan-frame"><span class="corner br"></span><span class="corner bl"></span><span class="scan-line"></span><span id="scan-feedback" class="scan-feedback" role="status" aria-live="polite">QR読取済み・照会中…</span></div>
       <div id="camera-hint" class="hint">スキャンすると自動で印刷タグを付けます</div>
       <aside id="perf-panel" aria-label="速度計測結果" hidden><strong>速度計測（端末内のみ）</strong><pre id="perf-output">計測待機中</pre></aside>
+      <div id="print-controls" class="print-controls" hidden>
+        <div id="print-summary" class="print-summary">受付 <strong>0</strong> / 完了 0 / 待ち 0 / 処理中 0 / エラー 0</div>
+        <div id="print-complete" class="print-complete"></div>
+        <div id="print-errors" class="print-errors" aria-live="polite"></div>
+      </div>
       <div id="ship-controls" class="ship-controls" hidden>
         <div class="ship-summary"><span><span id="carrier-label">発送準備</span> / スキャン済み</span><strong id="ship-count">0件</strong></div>
         <div id="ship-list" class="ship-list"></div>
@@ -192,6 +206,18 @@
       let performanceSequence = 0;
       let performanceHistory = [];
       let lastRequestCompletedAt = null;
+      const MAX_PRINT_REQUESTS = 1;
+      let printJobs = [];
+      let printJobByOrderId = new Map();
+      let activePrintRequestCount = 0;
+      let nextPrintSequence = 1;
+      let printWorkerPausedReason = '';
+      let printBatchMaxQueueDepth = 0;
+      let printBatchStartedAt = null;
+      let printBatchLastAcceptedAt = null;
+      let printBatchSettledAt = null;
+      let resumeContext = null;
+      let scanFeedbackToken = 0;
 
       function nowMs() {
         return performance.now();
@@ -314,6 +340,12 @@
         const api = result.api || {};
         const camera = result.camera || {};
         const settings = camera.settings || {};
+        const batchScanDurationMs = Number.isFinite(printBatchStartedAt) && Number.isFinite(printBatchLastAcceptedAt)
+          ? printBatchLastAcceptedAt - printBatchStartedAt
+          : null;
+        const batchSettledMs = Number.isFinite(printBatchStartedAt) && Number.isFinite(printBatchSettledAt)
+          ? printBatchSettledAt - printBatchStartedAt
+          : null;
         const decoderPaths = Object.entries(scan.decoderCounts || {}).map(([name, count]) => `${name}:${count}`).join(', ') || '—';
         const lines = [
           `#${result.sequence} ${result.action} / ${result.outcome}`,
@@ -324,6 +356,8 @@
           `往復: ${formatMs(api.fetchRttMs)}（header ${formatMs(api.headersMs)} / body ${formatMs(api.bodyDownloadMs)}）`,
           `サーバー内部: ${formatMs(api.serverTotalMs)}`,
           `通信・起動等: ${formatMs(api.transportOverheadMs)}`,
+          `キュー: 待ち ${formatMs(api.queueWaitMs)} / 受付時 ${Number.isFinite(api.queueDepthAtEnqueue) ? api.queueDepthAtEnqueue : '—'} / 開始時 ${Number.isFinite(api.queueDepthAtRequestStart) ? api.queueDepthAtRequestStart : '—'} / 最大 ${Number.isFinite(api.maxQueueDepth) ? api.maxQueueDepth : '—'}`,
+          `受付→結果: ${formatMs(api.scanToResultMs)} / バッチ受付操作: ${formatMs(batchScanDurationMs)} / 全処理: ${formatMs(batchSettledMs)}`,
           `JSON+描画: ${formatMs(result.jsonAndRenderMs)}`,
           `全体: ${formatMs(result.totalMs)}`,
           `ページ経過: ${formatMs(api.pageAgeMs)} / 前回完了から: ${formatMs(api.previousRequestGapMs)}`,
@@ -355,10 +389,11 @@
         perfOutput.textContent = lines.join('\n');
       }
 
-      function setScanFeedback(active) {
+      function setScanFeedback(active, message) {
         scanFrameElement.classList.toggle('detected', active);
+        if (active && message) document.getElementById('scan-feedback').textContent = message;
         document.getElementById('camera-subtitle').textContent = active
-          ? 'QR読取済み・照会中…'
+          ? (message || 'QR読取済み・照会中…')
           : (currentMode === 'shipping' ? 'QRを順番にスキャンしてください' : 'QRをかざしてください');
       }
 
@@ -434,7 +469,12 @@
               serverTotalMs: measurement.serverTotalMs,
               transportOverheadMs: measurement.transportOverheadMs,
               pageAgeMs: measurement.pageAgeMs,
-              previousRequestGapMs: measurement.previousRequestGapMs
+              previousRequestGapMs: measurement.previousRequestGapMs,
+              queueWaitMs: measurement.queueWaitMs,
+              queueDepthAtEnqueue: measurement.queueDepthAtEnqueue,
+              queueDepthAtRequestStart: measurement.queueDepthAtRequestStart,
+              maxQueueDepth: measurement.maxQueueDepth,
+              scanToResultMs: measurement.scanToResultMs
             },
             serverMarks: measurement.serverMarks,
             jsonAndRenderMs,
@@ -447,13 +487,225 @@
         });
       }
 
+      function resetPrintBatch() {
+        printJobs = [];
+        printJobByOrderId = new Map();
+        activePrintRequestCount = 0;
+        nextPrintSequence = 1;
+        printWorkerPausedReason = '';
+        printBatchMaxQueueDepth = 0;
+        printBatchStartedAt = null;
+        printBatchLastAcceptedAt = null;
+        printBatchSettledAt = null;
+        if (resumeContext && resumeContext.mode === 'print') resumeContext = null;
+        renderPrintQueue();
+      }
+
+      function getPrintJobCounts() {
+        const counts = { accepted: printJobs.length, completed: 0, queued: 0, requesting: 0, error: 0 };
+        printJobs.forEach(job => {
+          if (job.state === 'success' || job.state === 'already_tagged') counts.completed += 1;
+          else if (job.state === 'queued') counts.queued += 1;
+          else if (job.state === 'requesting') counts.requesting += 1;
+          else if (job.state === 'error') counts.error += 1;
+        });
+        return counts;
+      }
+
+      function renderPrintQueue() {
+        const summary = document.getElementById('print-summary');
+        const complete = document.getElementById('print-complete');
+        const errors = document.getElementById('print-errors');
+        if (!summary || !complete || !errors) return;
+        const counts = getPrintJobCounts();
+        if (counts.accepted > 0 && counts.queued === 0 && counts.requesting === 0 && !printWorkerPausedReason) {
+          if (!Number.isFinite(printBatchSettledAt)) printBatchSettledAt = nowMs();
+        } else {
+          printBatchSettledAt = null;
+        }
+        summary.innerHTML = `受付 <strong>${counts.accepted}</strong> / 完了 ${counts.completed} / 待ち ${counts.queued} / 処理中 ${counts.requesting} / エラー ${counts.error}`;
+        complete.textContent = counts.accepted > 0 && counts.completed === counts.accepted
+          ? `${counts.accepted}件の確認が完了しました。`
+          : (printWorkerPausedReason === 'auth' ? '再認証後に処理を再開します。' : '');
+        errors.textContent = '';
+        printJobs.filter(job => job.state === 'error').forEach(job => {
+          const row = document.createElement('div');
+          row.className = 'print-error-row';
+          const message = document.createElement('span');
+          message.className = 'print-error-text';
+          message.textContent = `${job.order_id}: ${job.error_message || '処理に失敗しました'}`;
+          message.title = message.textContent;
+          const retry = document.createElement('button');
+          retry.className = 'print-error-action';
+          retry.type = 'button';
+          retry.textContent = '再試行';
+          retry.addEventListener('click', () => retryPrintJob(job.id));
+          const remove = document.createElement('button');
+          remove.className = 'print-error-action';
+          remove.type = 'button';
+          remove.textContent = '削除';
+          remove.addEventListener('click', () => removePrintJob(job.id));
+          row.append(message, retry, remove);
+          errors.appendChild(row);
+        });
+      }
+
+      function removePrintJob(jobId) {
+        const index = printJobs.findIndex(job => job.id === jobId);
+        if (index < 0 || printJobs[index].state !== 'error') return;
+        printJobByOrderId.delete(printJobs[index].order_id);
+        printJobs.splice(index, 1);
+        renderPrintQueue();
+      }
+
+      function retryPrintJob(jobId) {
+        const job = printJobs.find(item => item.id === jobId);
+        if (!job || job.state !== 'error' || printWorkerPausedReason) return;
+        job.state = 'queued';
+        job.queued_at = nowMs();
+        job.completed_at = null;
+        job.error_code = '';
+        job.error_message = '';
+        renderPrintQueue();
+        pumpPrintQueue();
+      }
+
+      function enqueuePrintJob(orderId, scanMetrics) {
+        const queuedAt = nowMs();
+        const job = {
+          id: nextPrintSequence,
+          sequence: nextPrintSequence,
+          order_id: orderId,
+          state: 'queued',
+          attempts: 0,
+          created_at: queuedAt,
+          queued_at: queuedAt,
+          request_started_at: null,
+          completed_at: null,
+          scan_metrics: scanMetrics,
+          data: null,
+          error_code: '',
+          error_message: '',
+          queue_depth_at_enqueue: 0
+        };
+        nextPrintSequence += 1;
+        printJobs.push(job);
+        printJobByOrderId.set(orderId, job);
+        if (!Number.isFinite(printBatchStartedAt)) printBatchStartedAt = queuedAt;
+        printBatchLastAcceptedAt = queuedAt;
+        printBatchSettledAt = null;
+        job.queue_depth_at_enqueue = printJobs.filter(item => item.state === 'queued' || item.state === 'requesting').length;
+        printBatchMaxQueueDepth = Math.max(printBatchMaxQueueDepth, job.queue_depth_at_enqueue);
+        renderPrintQueue();
+        return job;
+      }
+
+      function pausePrintQueueForAuth(job, data) {
+        job.state = 'queued';
+        job.queued_at = nowMs();
+        printWorkerPausedReason = 'auth';
+        resumeContext = { mode: 'print' };
+        renderPrintQueue();
+        if (data.error_code === 'FORBIDDEN') showForbidden();
+        else showSignIn('サインインの有効期限が切れました。もう一度サインインしてください。');
+      }
+
+      async function processPrintJob(job) {
+        let measurement = null;
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'print', order_id: job.order_id, id_token: idToken }) });
+          const scanMetrics = job.attempts === 1 ? job.scan_metrics : null;
+          const result = await fetchJsonWithPerformance('print', body, scanMetrics);
+          const data = result.data;
+          measurement = result.measurement;
+          measurement.queueWaitMs = job.request_started_at - job.queued_at;
+          measurement.queueDepthAtEnqueue = job.queue_depth_at_enqueue;
+          measurement.queueDepthAtRequestStart = printJobs.filter(item => item.state === 'queued' || item.state === 'requesting').length;
+          measurement.maxQueueDepth = printBatchMaxQueueDepth;
+
+          if (data.error_code === 'TOKEN_MISSING' || data.error_code === 'TOKEN_INVALID' || data.error_code === 'FORBIDDEN') {
+            pausePrintQueueForAuth(job, data);
+            finishRequestPerformance(measurement, 'auth_error');
+            return;
+          }
+          if (!data.ok) {
+            job.state = 'error';
+            job.error_code = data.error_code || 'API_ERROR';
+            job.error_message = data.error || '処理に失敗しました。';
+            job.completed_at = nowMs();
+            measurement.scanToResultMs = job.completed_at - job.created_at;
+            renderPrintQueue();
+            showToast(`${job.order_id}: ${job.error_message}`, 'error');
+            finishRequestPerformance(measurement, 'api_error');
+            return;
+          }
+
+          job.data = data;
+          job.state = data.already_tagged ? 'already_tagged' : 'success';
+          job.completed_at = nowMs();
+          measurement.scanToResultMs = job.completed_at - job.created_at;
+          renderPrintQueue();
+          finishRequestPerformance(measurement, job.state);
+        } catch (error) {
+          measurement = error.performanceMeasurement || measurement;
+          if (measurement) {
+            measurement.queueWaitMs = job.request_started_at - job.queued_at;
+            measurement.queueDepthAtEnqueue = job.queue_depth_at_enqueue;
+            measurement.queueDepthAtRequestStart = printJobs.filter(item => item.state === 'queued' || item.state === 'requesting').length;
+            measurement.maxQueueDepth = printBatchMaxQueueDepth;
+          }
+          job.state = 'error';
+          job.error_code = 'NETWORK_ERROR';
+          job.error_message = '通信に失敗しました。';
+          job.completed_at = nowMs();
+          if (measurement) measurement.scanToResultMs = job.completed_at - job.created_at;
+          renderPrintQueue();
+          showToast(`${job.order_id}: ${job.error_message}`, 'error');
+          finishRequestPerformance(measurement, 'network_error');
+        }
+      }
+
+      function pumpPrintQueue() {
+        if (currentMode !== 'print' || printWorkerPausedReason || activePrintRequestCount >= MAX_PRINT_REQUESTS) return;
+        const job = printJobs.find(item => item.state === 'queued');
+        if (!job) { renderPrintQueue(); return; }
+        job.state = 'requesting';
+        job.attempts += 1;
+        job.request_started_at = nowMs();
+        activePrintRequestCount += 1;
+        renderPrintQueue();
+        processPrintJob(job).finally(() => {
+          activePrintRequestCount = Math.max(0, activePrintRequestCount - 1);
+          renderPrintQueue();
+          pumpPrintQueue();
+        });
+      }
+
+      function resumeAuthenticatedBatch() {
+        const context = resumeContext;
+        if (!context || context.mode !== 'print' || !printJobs.length) {
+          resumeContext = null;
+          showModeSelect();
+          return;
+        }
+        resumeContext = null;
+        printWorkerPausedReason = '';
+        currentMode = 'print';
+        updateCameraMode();
+        startCamera().then(() => {
+          pumpPrintQueue();
+          maybeShowInstallHint();
+        });
+      }
+
       window.handleSignIn = function(response) {
         if (!response || !response.credential) {
           showSignIn('サインインに失敗しました。もう一度お試しください。');
           return;
         }
         idToken = response.credential;
-        showModeSelect();
+        if (resumeContext) resumeAuthenticatedBatch();
+        else showModeSelect();
       };
 
       function showScreen(id) {
@@ -508,10 +760,13 @@
 
       function updateCameraMode() {
         const shipping = currentMode === 'shipping';
+        const printing = currentMode === 'print';
         document.getElementById('camera-title').textContent = shipping ? '発送準備' : '印刷モード';
         document.getElementById('camera-subtitle').textContent = shipping ? 'QRを順番にスキャンしてください' : 'QRをかざしてください';
         document.getElementById('camera-hint').textContent = shipping ? 'スキャンすると一覧に追加されます' : 'スキャンすると自動で印刷タグを付けます';
+        document.getElementById('print-controls').hidden = !printing;
         document.getElementById('ship-controls').hidden = !shipping;
+        if (printing) renderPrintQueue();
         if (shipping) {
           document.getElementById('carrier-label').textContent = carrier === 'sagawa' ? '佐川急便' : 'クリックポスト';
           renderShippingList();
@@ -520,6 +775,7 @@
 
       function startPrintMode() {
         currentMode = 'print';
+        resetPrintBatch();
         updateCameraMode();
         startCamera().then(maybeShowInstallHint);
       }
@@ -746,18 +1002,57 @@
         };
       }
 
-      async function handleQr(rawValue) {
-        const orderId = String(rawValue).trim();
+      function validateOrderCode(rawValue) {
+        const orderId = String(rawValue || '').trim();
+        if (!orderId) return { ok: false, silent: true, orderId: '' };
+        return { ok: /^\d+$/.test(orderId), silent: false, orderId };
+      }
+
+      async function acceptPrintQr(orderId) {
         const now = Date.now();
-        if (!orderId) return;
-        if (!/^\d+$/.test(orderId)) {
-          if (orderId !== lastRejectedValue || now - lastRejectedAt >= 2500) {
-            lastRejectedValue = orderId;
-            lastRejectedAt = now;
-            showToast('注文書QRを枠の中央に合わせてください。', 'warning');
+        const existingJob = printJobByOrderId.get(orderId);
+        if (existingJob) {
+          if (orderId !== lastScannedValue || now - lastScannedAt >= 2500) {
+            lastScannedValue = orderId;
+            lastScannedAt = now;
+            const stateLabel = existingJob.state === 'error' ? 'エラー一覧にあります。' : 'すでに受付済みです。';
+            showToast(`${orderId}は${stateLabel}`, 'warning');
           }
           return;
         }
+
+        lastScannedValue = orderId;
+        lastScannedAt = now;
+        requestInFlight = true;
+        const generation = scanGeneration;
+        const scanMetrics = activeScanPerformance;
+        const feedbackStartedAt = nowMs();
+        if (scanMetrics) {
+          scanMetrics.detectedAt = feedbackStartedAt;
+          scanMetrics.detectWaitMs = feedbackStartedAt - scanMetrics.startedAt;
+        }
+        enqueuePrintJob(orderId, scanMetrics);
+        const feedbackToken = ++scanFeedbackToken;
+        setScanFeedback(true, 'QR受付済み・処理中…');
+        if (typeof navigator.vibrate === 'function') {
+          try { navigator.vibrate(50); } catch (error) { /* 非対応端末では視覚表示のみ */ }
+        }
+        const paintedAt = await waitForNextPaint();
+        if (scanMetrics) scanMetrics.feedbackPaintMs = paintedAt - feedbackStartedAt;
+        requestInFlight = false;
+
+        if (generation === scanGeneration && scanning && currentMode === 'print') {
+          beginScanCycle();
+          scheduleScan();
+          pumpPrintQueue();
+        }
+        setTimeout(() => {
+          if (feedbackToken === scanFeedbackToken && currentMode === 'print') setScanFeedback(false);
+        }, 220);
+      }
+
+      async function handleShippingQr(orderId) {
+        const now = Date.now();
         if (requestInFlight || (orderId === lastScannedValue && now - lastScannedAt < 2500)) return;
         lastScannedValue = orderId;
         lastScannedAt = now;
@@ -769,15 +1064,29 @@
           scanMetrics.detectedAt = feedbackStartedAt;
           scanMetrics.detectWaitMs = feedbackStartedAt - scanMetrics.startedAt;
         }
-        setScanFeedback(true);
+        setScanFeedback(true, 'QR読取済み・照会中…');
         if (typeof navigator.vibrate === 'function') {
           try { navigator.vibrate(50); } catch (error) { /* 非対応端末では視覚表示のみ */ }
         }
         const paintedAt = await waitForNextPaint();
         if (scanMetrics) scanMetrics.feedbackPaintMs = paintedAt - feedbackStartedAt;
         if (generation !== scanGeneration || !requestInFlight) return;
-        if (currentMode === 'shipping') submitShipPrepScan(orderId, scanMetrics);
-        else submitPrint(orderId, scanMetrics);
+        submitShipPrepScan(orderId, scanMetrics);
+      }
+
+      function handleQr(rawValue) {
+        const validation = validateOrderCode(rawValue);
+        const now = Date.now();
+        if (!validation.ok) {
+          if (!validation.silent && (validation.orderId !== lastRejectedValue || now - lastRejectedAt >= 2500)) {
+            lastRejectedValue = validation.orderId;
+            lastRejectedAt = now;
+            showToast('注文書QRを枠の中央に合わせてください。', 'warning');
+          }
+          return;
+        }
+        if (currentMode === 'print') acceptPrintQr(validation.orderId);
+        else if (currentMode === 'shipping') handleShippingQr(validation.orderId);
       }
 
       function handleAuthError(data) {
@@ -790,33 +1099,6 @@
           return true;
         }
         return false;
-      }
-
-      async function submitPrint(orderId, scanMetrics) {
-        let measurement = null;
-        try {
-          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'print', order_id: orderId, id_token: idToken }) });
-          const result = await fetchJsonWithPerformance('print', body, scanMetrics);
-          const data = result.data;
-          measurement = result.measurement;
-          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
-          if (!data.ok) {
-            showToast(data.error || '処理に失敗しました。', 'error');
-            returnToCamera();
-            finishRequestPerformance(measurement, 'api_error');
-            return;
-          }
-          const label = data.store_label ? `（${data.store_label}）` : '';
-          const duplicate = data.already_tagged ? '印刷済みです。' : '印刷タグを付けました。';
-          showToast(`${data.order_number || data.order_id}${label}\n${duplicate}`, data.already_tagged ? 'warning' : 'success');
-          returnToCamera();
-          finishRequestPerformance(measurement, data.already_tagged ? 'already_tagged' : 'success');
-        } catch (error) {
-          measurement = error.performanceMeasurement || measurement;
-          showToast('通信に失敗しました。もう一度お試しください。', 'error');
-          returnToCamera();
-          finishRequestPerformance(measurement, 'network_error');
-        }
       }
 
       async function submitShipPrepScan(orderId, scanMetrics) {
