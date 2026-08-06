@@ -363,6 +363,7 @@
           `ページ経過: ${formatMs(api.pageAgeMs)} / 前回完了から: ${formatMs(api.previousRequestGapMs)}`,
           `redirect: ${api.redirected ? 'yes' : 'no'} / final: ${api.finalHost || '—'}`,
           `応答: HTTP ${Number.isFinite(api.responseStatus) ? api.responseStatus : '—'} / ${api.responseContentType || 'type不明'} / ${Number.isFinite(api.responseTextLength) ? `${api.responseTextLength}文字` : '長さ—'}`,
+          `trace: rid ${api.logicalRequestId || '—'} / ta ${Number.isFinite(api.transportAttempt) ? api.transportAttempt : '—'}`,
           `カメラ: getUserMedia ${formatMs(camera.getUserMediaMs)} / play ${formatMs(camera.videoPlayMs)} / detector ${formatMs(camera.detectorInitMs)} / ready ${formatMs(camera.cameraReadyMs)} / 初回試行可能 ${formatMs(camera.firstScanEligibleMs)}`,
           `映像: ${settings.width || scan.sourceWidth || 0}x${settings.height || scan.sourceHeight || 0} @${settings.frameRate || '—'}fps → ROI ${scan.sourceSide || 0}px → canvas ${scan.canvasSide || 0}px`,
           `試行方式: ${camera.scanScheduler || '—'}`,
@@ -418,9 +419,19 @@
         };
       }
 
-      async function fetchJsonWithPerformance(action, body, scanMetrics) {
+      function createLogicalRequestId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+          return `print-${window.crypto.randomUUID()}`;
+        }
+        const randomPart = Math.random().toString(36).slice(2, 12);
+        return `print-${Date.now().toString(36)}-${nextPrintSequence.toString(36)}-${randomPart}`;
+      }
+
+      async function fetchJsonWithPerformance(action, body, scanMetrics, options = {}) {
         const measurement = {
           action,
+          logicalRequestId: options.logicalRequestId || '',
+          transportAttempt: Number.isFinite(options.transportAttempt) ? options.transportAttempt : null,
           scanMetrics,
           camera: cameraPerformanceSnapshot(),
           fetchStartedAt: nowMs(),
@@ -445,7 +456,7 @@
         };
 
         try {
-          const response = await fetch(GAS_URL, { method: 'POST', body });
+          const response = await fetch(options.url || GAS_URL, { method: 'POST', body });
           const headersAt = nowMs();
           measurement.headersMs = headersAt - measurement.fetchStartedAt;
           measurement.redirected = response.redirected;
@@ -516,6 +527,8 @@
               responsePreview: measurement.responsePreview,
               responsePreviewOmitted: measurement.responsePreviewOmitted,
               badResponseKind: measurement.badResponseKind,
+              logicalRequestId: measurement.logicalRequestId,
+              transportAttempt: measurement.transportAttempt,
               serverTotalMs: measurement.serverTotalMs,
               transportOverheadMs: measurement.transportOverheadMs,
               pageAgeMs: measurement.pageAgeMs,
@@ -636,6 +649,8 @@
           data: null,
           error_code: '',
           error_message: '',
+          logical_request_id: createLogicalRequestId(),
+          transport_attempt: 0,
           queue_depth_at_enqueue: 0
         };
         nextPrintSequence += 1;
@@ -663,9 +678,27 @@
       async function processPrintJob(job) {
         let measurement = null;
         try {
-          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'print', order_id: job.order_id, id_token: idToken }) });
+          job.transport_attempt += 1;
+          const transportAttempt = job.transport_attempt;
+          const logicalRequestId = job.logical_request_id;
+          const requestUrl = new URL(GAS_URL);
+          requestUrl.searchParams.set('rid', logicalRequestId);
+          requestUrl.searchParams.set('ta', String(transportAttempt));
+          const body = new URLSearchParams({
+            payload: JSON.stringify({
+              action: 'print',
+              order_id: job.order_id,
+              id_token: idToken,
+              logical_request_id: logicalRequestId,
+              transport_attempt: transportAttempt
+            })
+          });
           const scanMetrics = job.attempts === 1 ? job.scan_metrics : null;
-          const result = await fetchJsonWithPerformance('print', body, scanMetrics);
+          const result = await fetchJsonWithPerformance('print', body, scanMetrics, {
+            url: requestUrl.toString(),
+            logicalRequestId,
+            transportAttempt
+          });
           const data = result.data;
           measurement = result.measurement;
           measurement.queueWaitMs = job.request_started_at - job.queued_at;
