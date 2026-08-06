@@ -362,12 +362,17 @@
           `全体: ${formatMs(result.totalMs)}`,
           `ページ経過: ${formatMs(api.pageAgeMs)} / 前回完了から: ${formatMs(api.previousRequestGapMs)}`,
           `redirect: ${api.redirected ? 'yes' : 'no'} / final: ${api.finalHost || '—'}`,
+          `応答: HTTP ${Number.isFinite(api.responseStatus) ? api.responseStatus : '—'} / ${api.responseContentType || 'type不明'} / ${Number.isFinite(api.responseTextLength) ? `${api.responseTextLength}文字` : '長さ—'}`,
           `カメラ: getUserMedia ${formatMs(camera.getUserMediaMs)} / play ${formatMs(camera.videoPlayMs)} / detector ${formatMs(camera.detectorInitMs)} / ready ${formatMs(camera.cameraReadyMs)} / 初回試行可能 ${formatMs(camera.firstScanEligibleMs)}`,
           `映像: ${settings.width || scan.sourceWidth || 0}x${settings.height || scan.sourceHeight || 0} @${settings.frameRate || '—'}fps → ROI ${scan.sourceSide || 0}px → canvas ${scan.canvasSide || 0}px`,
           `試行方式: ${camera.scanScheduler || '—'}`,
           `BarcodeDetector: API ${camera.barcodeDetectorApiAvailable ? 'yes' : 'no'} / QR ${camera.barcodeDetectorQrSupported ? 'yes' : 'no'}`,
           `端末: ${camera.platform || '—'} / ${camera.userAgent || '—'}`
         ];
+        if (api.badResponseKind) {
+          lines.push(`不正応答: ${api.badResponseKind}`);
+          lines.push(`本文先頭: ${api.responsePreviewOmitted ? '（個人情報保護のため非表示）' : (api.responsePreview || '（取得なし）')}`);
+        }
 
         const marks = result.serverMarks || [];
         if (marks.length) {
@@ -397,6 +402,22 @@
           : (currentMode === 'shipping' ? 'QRを順番にスキャンしてください' : 'QRをかざしてください');
       }
 
+      function summarizeBadResponse(responseText, action) {
+        const text = String(responseText || '');
+        let kind = 'non_json';
+        if (!text.length) kind = 'empty';
+        else if (text.includes('このURLはAPI専用です')) kind = 'api_only_do_get_text';
+        else if (/^\s*</.test(text)) kind = 'html';
+        const previewAllowed = action === 'print' || kind === 'api_only_do_get_text' || kind === 'empty' || kind === 'html';
+        const preview = previewAllowed ? text.slice(0, 200).replace(/[\r\n\t]+/g, ' ').trim() : '';
+        return {
+          kind,
+          preview: previewAllowed ? (preview || '（空文字列）') : '',
+          previewOmitted: !previewAllowed,
+          length: text.length
+        };
+      }
+
       async function fetchJsonWithPerformance(action, body, scanMetrics) {
         const measurement = {
           action,
@@ -412,6 +433,12 @@
           jsonReadyAt: null,
           redirected: false,
           finalHost: '',
+          responseStatus: null,
+          responseContentType: '',
+          responseTextLength: null,
+          responsePreview: '',
+          responsePreviewOmitted: false,
+          badResponseKind: '',
           serverTotalMs: null,
           transportOverheadMs: null,
           serverMarks: []
@@ -422,15 +449,32 @@
           const headersAt = nowMs();
           measurement.headersMs = headersAt - measurement.fetchStartedAt;
           measurement.redirected = response.redirected;
+          measurement.responseStatus = response.status;
+          measurement.responseContentType = response.headers && typeof response.headers.get === 'function'
+            ? (response.headers.get('content-type') || '')
+            : '';
           try { measurement.finalHost = new URL(response.url).host; } catch (error) { measurement.finalHost = ''; }
           const responseText = await response.text();
           const bodyAt = nowMs();
           measurement.bodyDownloadMs = bodyAt - headersAt;
           measurement.fetchRttMs = bodyAt - measurement.fetchStartedAt;
           const jsonStartedAt = nowMs();
-          const data = JSON.parse(responseText);
-          measurement.jsonReadyAt = nowMs();
-          measurement.jsonParseMs = measurement.jsonReadyAt - jsonStartedAt;
+          let data;
+          try {
+            data = JSON.parse(responseText);
+            measurement.jsonReadyAt = nowMs();
+            measurement.jsonParseMs = measurement.jsonReadyAt - jsonStartedAt;
+          } catch (parseError) {
+            measurement.jsonReadyAt = nowMs();
+            measurement.jsonParseMs = measurement.jsonReadyAt - jsonStartedAt;
+            const badResponse = summarizeBadResponse(responseText, action);
+            measurement.responseTextLength = badResponse.length;
+            measurement.responsePreview = badResponse.preview;
+            measurement.responsePreviewOmitted = badResponse.previewOmitted;
+            measurement.badResponseKind = badResponse.kind;
+            parseError.failureCode = 'BAD_RESPONSE';
+            throw parseError;
+          }
           if (data && data._perf) {
             measurement.serverTotalMs = Number(data._perf.total_ms);
             measurement.serverMarks = Array.isArray(data._perf.marks) ? data._perf.marks : [];
@@ -441,8 +485,8 @@
           return { data, measurement };
         } catch (error) {
           const failedAt = nowMs();
-          measurement.fetchRttMs = failedAt - measurement.fetchStartedAt;
-          measurement.jsonReadyAt = failedAt;
+          if (!Number.isFinite(measurement.fetchRttMs)) measurement.fetchRttMs = failedAt - measurement.fetchStartedAt;
+          if (!Number.isFinite(measurement.jsonReadyAt)) measurement.jsonReadyAt = failedAt;
           error.performanceMeasurement = measurement;
           throw error;
         }
@@ -466,6 +510,12 @@
               fetchRttMs: measurement.fetchRttMs,
               redirected: measurement.redirected,
               finalHost: measurement.finalHost,
+              responseStatus: measurement.responseStatus,
+              responseContentType: measurement.responseContentType,
+              responseTextLength: measurement.responseTextLength,
+              responsePreview: measurement.responsePreview,
+              responsePreviewOmitted: measurement.responsePreviewOmitted,
+              badResponseKind: measurement.badResponseKind,
               serverTotalMs: measurement.serverTotalMs,
               transportOverheadMs: measurement.transportOverheadMs,
               pageAgeMs: measurement.pageAgeMs,
@@ -654,14 +704,17 @@
             measurement.queueDepthAtRequestStart = printJobs.filter(item => item.state === 'queued' || item.state === 'requesting').length;
             measurement.maxQueueDepth = printBatchMaxQueueDepth;
           }
+          const badResponse = error.failureCode === 'BAD_RESPONSE';
           job.state = 'error';
-          job.error_code = 'NETWORK_ERROR';
-          job.error_message = '通信に失敗しました。';
+          job.error_code = badResponse ? 'BAD_RESPONSE' : 'NETWORK_ERROR';
+          job.error_message = badResponse
+            ? 'サーバー応答を確認できませんでした。再試行してください。'
+            : '通信に失敗しました。';
           job.completed_at = nowMs();
           if (measurement) measurement.scanToResultMs = job.completed_at - job.created_at;
           renderPrintQueue();
           showToast(`${job.order_id}: ${job.error_message}`, 'error');
-          finishRequestPerformance(measurement, 'network_error');
+          finishRequestPerformance(measurement, badResponse ? 'bad_response' : 'network_error');
         }
       }
 
