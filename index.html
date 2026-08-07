@@ -42,7 +42,7 @@
     .hint { position:absolute; bottom:calc(36px + env(safe-area-inset-bottom)); padding:10px 18px; border-radius:999px; background:#0009; color:#fff; font-size:14px; }
     #loading-screen, #error-screen, #forbidden-screen { padding:28px; text-align:center; background:var(--bg); }
     #signin-screen { padding:28px; text-align:center; background:var(--bg); }
-    #mode-screen, #carrier-screen, #team-destination-screen, #complete-screen { padding:28px; text-align:center; background:var(--bg); }
+    #mode-screen, #carrier-screen, #team-destination-screen, #shipping-issues-screen, #complete-screen { padding:28px; text-align:center; background:var(--bg); }
     .card { width:min(100%,420px); padding:28px 22px; border:1px solid #2b3248; border-radius:20px; background:var(--surface); }
     h1 { margin:0 0 12px; font-size:22px; } p { margin:8px 0; color:var(--muted); line-height:1.7; white-space:pre-wrap; }
     .spinner { width:42px; height:42px; margin:0 auto 18px; border:4px solid #343b52; border-top-color:var(--mode-color); border-radius:50%; animation:spin .8s linear infinite; }
@@ -81,9 +81,11 @@
     .ship-list { max-height:130px; overflow:auto; margin-top:8px; display:flex; flex-direction:column; gap:5px; text-align:left; }
     .ship-item { display:flex; align-items:center; gap:8px; padding:7px 9px; border-radius:8px; background:#134e4a; font-size:12px; }
     .ship-item span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .package-count { width:48px; padding:5px; border:1px solid #5eead4; border-radius:6px; background:#042f2e; color:#fff; text-align:center; }
     .ship-remove { flex:0 0 auto; width:28px; margin:0; padding:4px; border:1px solid #99f6e4; background:transparent; color:#ccfbf1; font-size:16px; line-height:1; }
     .ship-finalize { margin-top:10px; padding:10px; background:#14b8a6; color:#042f2e; }
+    .shipping-status-banner { margin:0 auto 10px; max-width:520px; width:100%; padding:8px 12px; border-radius:8px; background:#155e75; color:#cffafe; text-align:center; font-size:13px; font-weight:700; }
+    .shipping-status-banner.warn { background:#9a3412; color:#ffedd5; }
+    .shipping-status-banner.closed { background:#7f1d1d; color:#fee2e2; }
     .address-form { display:grid; gap:9px; margin-top:14px; text-align:left; }
     .address-form label { color:var(--muted); font-size:12px; }
     .address-form input { width:100%; padding:10px; border:1px solid #52617f; border-radius:8px; background:#0e1320; color:#fff; font:inherit; }
@@ -111,10 +113,9 @@
     </div>
   </section>
   <section id="carrier-screen" class="screen" aria-label="発送方法選択">
-    <div class="card"><h1>発送方法を選択</h1><p>今回の発送準備で使う方法を選んでください。</p>
+    <div class="card"><h1>発送準備</h1><p>QRを読み取り、締め時に個別発送またはまとめ発送を選択します。</p>
       <div class="choice-list">
-        <button id="sagawa-button" class="choice-button ship" type="button">佐川急便（宅配便）</button>
-        <button id="clickpost-button" class="choice-button ship" type="button">クリックポスト</button>
+        <button id="sagawa-button" class="choice-button ship" type="button">発送準備を開始</button>
         <button id="carrier-back-button" class="choice-button" type="button">モード選択へ戻る</button>
       </div>
     </div>
@@ -123,6 +124,7 @@
     <video id="video" autoplay playsinline muted></video>
     <div class="camera-overlay">
       <div class="topbar"><span class="mode-dot"></span><span id="camera-title" class="title">印刷モード</span><span id="camera-subtitle" class="subtitle">QRをかざしてください</span></div>
+      <div id="shipping-status-banner" class="shipping-status-banner" hidden role="status" aria-live="polite"></div>
       <div id="scan-frame" class="scan-frame"><span class="corner br"></span><span class="corner bl"></span><span class="scan-line"></span><span id="scan-feedback" class="scan-feedback" role="status" aria-live="polite">QR読取済み・照会中…</span></div>
       <div id="camera-hint" class="hint">スキャンすると自動で印刷タグを付けます</div>
       <aside id="perf-panel" aria-label="速度計測結果" hidden><strong>速度計測（端末内のみ）</strong><pre id="perf-output">計測待機中</pre></aside>
@@ -141,20 +143,29 @@
   <section id="loading-screen" class="screen"><div class="card"><div class="spinner"></div><p id="loading-message">カメラを準備しています…</p></div></section>
   <section id="error-screen" class="screen"><div class="card"><h1>処理できませんでした</h1><p id="error-message"></p><button id="retry-button" type="button">カメラに戻る</button></div></section>
   <section id="forbidden-screen" class="screen"><div class="card"><h1>アクセスできません</h1><p id="forbidden-message">許可されたGoogleアカウントでサインインしてください。</p><button id="forbidden-button" type="button">サインイン画面へ戻る</button></div></section>
-  <section id="team-destination-screen" class="screen" aria-label="チーム代表者宛先選択">
-    <div class="card"><h1>発送先を選択</h1><p id="team-order-message"></p>
+  <section id="team-destination-screen" class="screen" aria-label="発送単位と送付先選択">
+    <div class="card"><h1>発送方法と送付先</h1><p id="team-order-message"></p>
       <div class="choice-list">
-        <button id="shopify-destination-button" class="choice-button ship" type="button">Shopify記載の宛先に送る</button>
-        <button id="representative-destination-button" class="choice-button ship" type="button">チーム代表者宛に送る</button>
+        <button id="individual-button" class="choice-button ship" type="button">個別発送（1注文1個口）</button>
+        <button id="single-parcel-button" class="choice-button ship" type="button">まとめ発送（1個口）</button>
       </div>
       <div id="representative-form" class="address-form" hidden>
+        <label>代表送付先（マスタ）<select id="team-destination-select"><option value="">選択してください</option></select></label>
+        <p>または、以下へ送付先を手入力してください。</p>
         <label>郵便番号<input id="team-postal-code" autocomplete="postal-code"></label>
-        <label>住所<input id="team-address" autocomplete="street-address"></label>
+        <label>都道府県<select id="team-prefecture"><option value="">選択してください</option></select></label>
+        <label>市区町村<input id="team-city" autocomplete="address-level2"></label>
+        <label>番地<input id="team-address" autocomplete="street-address"></label>
+        <label>建物名<input id="team-address2" autocomplete="address-line2"></label>
         <label>氏名<input id="team-name" autocomplete="name"></label>
+        <label>会社名<input id="team-company" autocomplete="organization"></label>
         <label>電話番号<input id="team-phone" type="tel" autocomplete="tel"></label>
-        <div class="address-actions"><button id="team-address-cancel" class="choice-button" type="button">戻る</button><button id="team-address-save" class="choice-button ship" type="button">この宛先を使う</button></div>
+        <div class="address-actions"><button id="team-address-cancel" class="choice-button" type="button">戻る</button><button id="team-address-save" class="choice-button ship" type="button">この宛先でまとめる</button></div>
       </div>
     </div>
+  </section>
+  <section id="shipping-issues-screen" class="screen" aria-label="発送確認">
+    <div class="card"><h1>発送前の確認</h1><p id="shipping-issues-message"></p><div id="shipping-issues-list" class="warning-list"></div><div class="address-actions"><button id="shipping-issues-back" class="choice-button" type="button">戻る</button><button id="shipping-issues-confirm" class="choice-button ship" type="button">確認して続行</button></div></div>
   </section>
   <section id="complete-screen" class="screen" aria-label="発送準備完了">
     <div class="card"><h1>発送準備完了</h1><p id="complete-message"></p><div id="shipping-warnings" class="warning-list"></div><button id="complete-next-button" class="choice-button ship" type="button">発送準備を続ける</button></div>
@@ -188,10 +199,15 @@
       let toastTimer = null;
       let idToken = '';
       let currentMode = '';
-      let carrier = '';
       let shippingItems = [];
-      let pendingShipScan = null;
-      let lastTeamDestination = null;
+      let shippingContext = null;
+      let pendingFinalize = null;
+      let pendingIssueData = null;
+      let finalizeRequestId = '';
+      let finalizeTransportAttempt = 0;
+      let serverEpochAtSync = null;
+      let performanceNowAtSync = null;
+      const JAPANESE_PREFECTURES = ['北海道','青森県','岩手県','宮城県','秋田県','山形県','福島県','茨城県','栃木県','群馬県','埼玉県','千葉県','東京都','神奈川県','新潟県','富山県','石川県','福井県','山梨県','長野県','岐阜県','静岡県','愛知県','三重県','滋賀県','京都府','大阪府','兵庫県','奈良県','和歌山県','鳥取県','島根県','岡山県','広島県','山口県','徳島県','香川県','愛媛県','高知県','福岡県','佐賀県','長崎県','熊本県','大分県','宮崎県','鹿児島県','沖縄県'];
       const SCAN_INTERVAL_MS = 16;
       const SCAN_ROI_FRACTION = 0.75;
       let scanTimer = null;
@@ -205,6 +221,7 @@
       let activeScanPerformance = null;
       let performanceSequence = 0;
       let performanceHistory = [];
+      let shippingStatusTimer = null;
       let lastRequestCompletedAt = null;
       const MAX_PRINT_REQUESTS = 1;
       let printJobs = [];
@@ -840,8 +857,33 @@
 
       function showModeSelect() {
         stopCamera();
+        stopShippingStatusTimer();
         currentMode = '';
         showScreen('mode-screen');
+      }
+
+      function stopShippingStatusTimer() {
+        if (shippingStatusTimer !== null) clearInterval(shippingStatusTimer);
+        shippingStatusTimer = null;
+      }
+
+      function updateShippingStatusBanner() {
+        const banner = document.getElementById('shipping-status-banner');
+        if (currentMode !== 'shipping' || !shippingContext) { banner.hidden = true; return; }
+        const now = new Date(adjustedIsoNow()).getTime();
+        const sagawaAt = Date.parse(shippingContext.sagawa_switch_at);
+        const yamatoAt = Date.parse(shippingContext.yamato_close_at);
+        banner.className = 'shipping-status-banner';
+        if (Number.isFinite(yamatoAt) && now >= yamatoAt) {
+          banner.textContent = '本日の当日発送締切後です（翌営業日扱い）';
+          banner.classList.add('closed');
+        } else if (Number.isFinite(sagawaAt) && now >= sagawaAt) {
+          banner.textContent = '現在はヤマト判定時間帯です（佐川締切後）';
+          banner.classList.add('warn');
+        } else {
+          banner.textContent = '現在は佐川・ヤマトの通常判定時間帯です';
+        }
+        banner.hidden = false;
       }
 
       function updateCameraMode() {
@@ -854,12 +896,13 @@
         document.getElementById('ship-controls').hidden = !shipping;
         if (printing) renderPrintQueue();
         if (shipping) {
-          document.getElementById('carrier-label').textContent = carrier === 'sagawa' ? '佐川急便' : 'クリックポスト';
+          document.getElementById('carrier-label').textContent = '発送準備';
           renderShippingList();
         }
       }
 
       function startPrintMode() {
+        stopShippingStatusTimer();
         currentMode = 'print';
         resetPrintBatch();
         updateCameraMode();
@@ -871,13 +914,46 @@
         showScreen('carrier-screen');
       }
 
-      function startShippingMode(selectedCarrier) {
+      async function startShippingMode() {
+        stopShippingStatusTimer();
         currentMode = 'shipping';
-        carrier = selectedCarrier;
         shippingItems = [];
-        pendingShipScan = null;
+        shippingContext = null;
+        pendingFinalize = null;
+        pendingIssueData = null;
+        finalizeRequestId = createRequestId('fin');
+        finalizeTransportAttempt = 0;
         updateCameraMode();
-        startCamera().then(maybeShowInstallHint);
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'ship_prep_context', id_token: idToken }) });
+          const result = await fetchJsonWithPerformance('ship_prep_context', body, null);
+          const data = result.data;
+          if (handleAuthError(data)) return;
+          if (!data.ok) throw new Error(data.error || '発送準備の営業日情報を取得できませんでした。');
+          shippingContext = data;
+          serverEpochAtSync = Date.parse(data.server_now);
+          performanceNowAtSync = performance.now();
+          if (!Number.isFinite(serverEpochAtSync)) throw new Error('サーバー時刻を確認できませんでした。');
+          updateShippingStatusBanner();
+          shippingStatusTimer = setInterval(updateShippingStatusBanner, 1000);
+          populateTeamDestinations(Array.isArray(data.team_destinations) ? data.team_destinations : []);
+          await startCamera();
+          maybeShowInstallHint();
+        } catch (error) {
+          showError(error.message || '発送準備の営業日情報を取得できませんでした。');
+        }
+      }
+
+      function createRequestId(prefix) {
+        const suffix = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        return `${prefix}-${suffix}`;
+      }
+
+      function adjustedIsoNow() {
+        const epoch = Number.isFinite(serverEpochAtSync) && Number.isFinite(performanceNowAtSync)
+          ? serverEpochAtSync + (performance.now() - performanceNowAtSync)
+          : Date.now();
+        return new Date(epoch).toISOString();
       }
 
       function initializeGoogleSignIn(attempt = 0) {
@@ -1116,6 +1192,7 @@
         if (scanMetrics) {
           scanMetrics.detectedAt = feedbackStartedAt;
           scanMetrics.detectWaitMs = feedbackStartedAt - scanMetrics.startedAt;
+          scanMetrics.scanAcceptedAt = adjustedIsoNow();
         }
         enqueuePrintJob(orderId, scanMetrics);
         const feedbackToken = ++scanFeedbackToken;
@@ -1190,7 +1267,12 @@
       async function submitShipPrepScan(orderId, scanMetrics) {
         let measurement = null;
         try {
-          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'ship_prep_scan', order_id: orderId, id_token: idToken }) });
+          const clientDispatchedAt = adjustedIsoNow();
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_prep_scan', order_id: orderId, id_token: idToken,
+            scan_accepted_at: (scanMetrics && scanMetrics.scanAcceptedAt) || clientDispatchedAt,
+            client_dispatched_at: clientDispatchedAt
+          }) });
           const result = await fetchJsonWithPerformance('ship_prep_scan', body, scanMetrics);
           const data = result.data;
           measurement = result.measurement;
@@ -1208,15 +1290,7 @@
             finishRequestPerformance(measurement, 'duplicate');
             return;
           }
-          if (data.is_team_pickup) {
-            pendingShipScan = data;
-            scanning = false;
-            requestInFlight = false;
-            showTeamDestination(data);
-            finishRequestPerformance(measurement, 'destination_required');
-            return;
-          }
-          addShippingItem(data, data.shipping_address);
+          addShippingItem(data);
           showToast(`${data.order_number || data.order_id}を一覧に追加しました`, 'success');
           returnToCamera();
           finishRequestPerformance(measurement, 'success');
@@ -1228,14 +1302,24 @@
         }
       }
 
-      function addShippingItem(data, destination) {
+      function addShippingItem(data) {
         shippingItems.push({
           order_id: data.order_id,
           order_number: data.order_number,
           store: data.store,
           team_name: data.team_name || '',
-          package_count: 1,
-          destination: { ...destination }
+          shipping_method: data.shipping_method || 'unknown',
+          is_team_pickup: Boolean(data.is_team_pickup),
+          is_store_pickup: Boolean(data.is_store_pickup),
+          shipping_address: data.shipping_address ? { ...data.shipping_address } : null,
+          suggested_carrier: data.suggested_carrier,
+          planned_ship_date: data.planned_ship_date,
+          decision_day_type: data.decision_day_type,
+          carrier_decided_at: data.carrier_decided_at,
+          carrier_rule_version: data.carrier_rule_version,
+          decision_reason: data.decision_reason,
+          decision_warnings: Array.isArray(data.decision_warnings) ? data.decision_warnings : [],
+          region: data.region
         });
         renderShippingList();
       }
@@ -1257,18 +1341,9 @@
           const row = document.createElement('div');
           row.className = 'ship-item';
           const label = document.createElement('span');
-          label.textContent = `${item.order_number || item.order_id} / ${formatJapaneseName(item.destination) || '宛先未設定'}`;
-          const count = document.createElement('input');
-          count.className = 'package-count';
-          count.type = 'number';
-          count.min = '1';
-          count.max = '99';
-          count.value = String(item.package_count || 1);
-          count.setAttribute('aria-label', '個口数');
-          count.addEventListener('change', () => {
-            item.package_count = Math.max(1, Number.parseInt(count.value, 10) || 1);
-            count.value = String(item.package_count);
-          });
+          const method = item.shipping_method === 'clickpost' ? 'クリックポスト' : item.shipping_method === 'parcel' ? (item.suggested_carrier || '宅配便') : '配送方法不明';
+          const flags = [item.is_team_pickup ? 'チーム受取' : '', item.is_store_pickup ? '店舗受取' : ''].filter(Boolean).join('・');
+          label.textContent = `${item.order_number || item.order_id} / ${method}${flags ? ` / ${flags}` : ''}`;
           const remove = document.createElement('button');
           remove.className = 'ship-remove';
           remove.type = 'button';
@@ -1278,75 +1353,156 @@
             shippingItems.splice(index, 1);
             renderShippingList();
           });
-          row.append(label, count, remove);
+          row.append(label, remove);
           list.appendChild(row);
         });
       }
 
-      function showTeamDestination(data) {
-        document.getElementById('team-order-message').textContent = `${data.order_number || data.order_id}：発送先を選択してください。`;
+      function populateTeamDestinations(destinations) {
+        const select = document.getElementById('team-destination-select');
+        select.textContent = '';
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = '選択してください';
+        select.appendChild(empty);
+        destinations.forEach(destination => {
+          const option = document.createElement('option');
+          option.value = destination.master_id || '';
+          option.textContent = `${destination.team_name || ''} / ${destination.name || ''} / ${destination.prefecture || ''}`;
+          option.dataset.destination = JSON.stringify(destination);
+          select.appendChild(option);
+        });
+      }
+
+      function showConsolidationScreen() {
+        if (!shippingItems.length) { showToast('発送準備の一覧が空です。', 'error'); return; }
+        scanning = false;
+        requestInFlight = false;
+        document.getElementById('team-order-message').textContent = `${shippingItems.length}件の発送方法を選択してください。`;
         document.getElementById('representative-form').hidden = true;
         showScreen('team-destination-screen');
       }
 
       function showRepresentativeForm() {
-        const form = document.getElementById('representative-form');
-        form.hidden = false;
-        const value = lastTeamDestination || {};
-        document.getElementById('team-postal-code').value = value.postal_code || '';
-        document.getElementById('team-address').value = value.address1 || '';
-        document.getElementById('team-name').value = value.name || '';
-        document.getElementById('team-phone').value = value.phone || '';
+        document.getElementById('representative-form').hidden = false;
+        JAPANESE_PREFECTURES.forEach(prefecture => {
+          const select = document.getElementById('team-prefecture');
+          if ([...select.options].some(option => option.value === prefecture)) return;
+          const option = document.createElement('option');
+          option.value = prefecture;
+          option.textContent = prefecture;
+          select.appendChild(option);
+        });
       }
 
-      function useShopifyDestination() {
-        if (!pendingShipScan) return;
-        addShippingItem(pendingShipScan, pendingShipScan.shipping_address);
-        pendingShipScan = null;
-        returnToCamera();
+      function destinationFromForm() {
+        const select = document.getElementById('team-destination-select');
+        const selected = select.options[select.selectedIndex];
+        if (selected && selected.dataset.destination) return JSON.parse(selected.dataset.destination);
+        return {
+          postal_code: document.getElementById('team-postal-code').value.trim(),
+          prefecture: document.getElementById('team-prefecture').value,
+          city: document.getElementById('team-city').value.trim(),
+          address1: document.getElementById('team-address').value.trim(),
+          address2: document.getElementById('team-address2').value.trim(),
+          name: document.getElementById('team-name').value.trim(),
+          company: document.getElementById('team-company').value.trim(),
+          phone: document.getElementById('team-phone').value.trim()
+        };
       }
 
       function useRepresentativeDestination() {
-        const postalCode = document.getElementById('team-postal-code').value.trim();
-        const address = document.getElementById('team-address').value.trim();
-        const name = document.getElementById('team-name').value.trim();
-        const phone = document.getElementById('team-phone').value.trim();
-        if (!postalCode || !address || !name || !phone) {
-          showToast('郵便番号・住所・氏名・電話番号を入力してください。', 'error');
+        const destination = destinationFromForm();
+        if (!destination.postal_code || !destination.prefecture || !destination.city || !destination.address1 || !destination.name || !destination.phone) {
+          showToast('郵便番号・都道府県・市区町村・番地・氏名・電話番号を入力または選択してください。', 'error');
           return;
         }
-        const destination = { postal_code: postalCode, prefecture: '', city: '', address1: address, address2: '', name, company: '', phone };
-        lastTeamDestination = destination;
-        addShippingItem(pendingShipScan, destination);
-        pendingShipScan = null;
-        returnToCamera();
+        submitFinalize('single_parcel', destination);
       }
 
-      async function finalizeShipping() {
+      function collectIssueResolutions() {
+        const resolutions = {};
+        document.querySelectorAll('[data-issue-code]').forEach(select => { resolutions[select.dataset.issueCode] = select.value; });
+        return resolutions;
+      }
+
+      function shippingIssueLabel(code) {
+        const labels = {
+          SHIPPING_METHOD_UNKNOWN: '配送方法不明',
+          CONSOLIDATED_DESTINATION_REQUIRED: 'まとめ発送の送付先が必要',
+          CARRIER_UNDETERMINED: '運送会社を判定できません',
+          CLICKPOST_CANNOT_CONSOLIDATE: 'クリックポストはまとめ不可',
+          MULTI_STORE_CANNOT_CONSOLIDATE: '複数ストアはまとめ不可',
+          TEAM_PICKUP_NOT_MERGED: 'チーム受取を個別発送',
+          STORE_PICKUP_INCLUDED: '店舗受取を含む発送',
+          SAGAWA_CUTOFF_PASSED: '佐川の締切超過',
+          BUSINESS_DATE_CHANGED: '営業日変更'
+        };
+        return labels[code] || code || '発送確認';
+      }
+
+      function renderShippingIssues(data) {
+        pendingIssueData = data;
+        const list = document.getElementById('shipping-issues-list');
+        list.textContent = '';
+        const issues = Array.isArray(data.issues) ? data.issues : [];
+        const hasBlock = issues.some(issue => issue.severity === 'block');
+        document.getElementById('shipping-issues-message').textContent = hasBlock ? '内容を修正してから再度確定してください。' : '確認事項があります。内容を確認して続行してください。';
+        issues.forEach(issue => {
+          const row = document.createElement('div');
+          row.textContent = `【${issue.severity === 'block' ? '停止' : '確認'}】${shippingIssueLabel(issue.code)}: ${issue.message || issue.code}`;
+          if (issue.severity === 'confirm') {
+            const select = document.createElement('select');
+            select.dataset.issueCode = issue.code;
+            if (issue.code === 'SAGAWA_CUTOFF_PASSED') {
+              select.append(new Option('推奨: ヤマトへ切替', 'switch_eligible'), new Option('佐川のまま確定', 'keep_original'));
+            } else if (issue.code === 'BUSINESS_DATE_CHANGED') {
+              select.append(new Option('推奨: 本日の条件で再判定', 'rejudge_today'), new Option('元の判定のまま', 'keep_original'));
+            } else {
+              select.append(new Option('確認済み', 'confirmed'));
+            }
+            row.appendChild(select);
+          }
+          list.appendChild(row);
+        });
+        document.getElementById('shipping-issues-confirm').hidden = hasBlock;
+        showScreen('shipping-issues-screen');
+      }
+
+      async function submitFinalize(consolidation, destination = null, issueResolutions = {}) {
         if (!shippingItems.length) { showToast('発送準備の一覧が空です。', 'error'); return; }
         scanning = false;
         requestInFlight = true;
         showScreen('loading-screen');
+        const destinationConfirmedAt = consolidation === 'single_parcel' ? adjustedIsoNow() : '';
+        const destinationClientDispatchedAt = consolidation === 'single_parcel' ? adjustedIsoNow() : '';
+        pendingFinalize = { consolidation, destination, destinationConfirmedAt, destinationClientDispatchedAt };
         let measurement = null;
         try {
-          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'ship_prep_finalize', id_token: idToken, carrier, items: shippingItems }) });
+          finalizeTransportAttempt += 1;
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_prep_finalize', id_token: idToken, finalize_request_id: finalizeRequestId,
+            transport_attempt: finalizeTransportAttempt, consolidation, items: shippingItems,
+            ...(destination ? { consolidated_destination: destination, consolidated_destination_confirmed_at: destinationConfirmedAt, consolidated_destination_client_dispatched_at: destinationClientDispatchedAt } : {}),
+            ...(Object.keys(issueResolutions).length ? { issue_resolutions: issueResolutions } : {})
+          }) });
           const result = await fetchJsonWithPerformance('ship_prep_finalize', body, null);
           const data = result.data;
           measurement = result.measurement;
           if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
           if (!data.ok) {
             requestInFlight = false;
-            showToast(data.error || '発送準備を確定できませんでした。', 'error');
-            updateCameraMode();
-            returnToCamera();
+            if (Array.isArray(data.issues)) renderShippingIssues(data);
+            else { showToast(data.error || '発送準備を確定できませんでした。', 'error'); showScreen('team-destination-screen'); }
             finishRequestPerformance(measurement, 'api_error');
             return;
           }
-          const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+          const warnings = (data.artifacts || []).flatMap(artifact => artifact.warnings || []);
           const warningList = document.getElementById('shipping-warnings');
           warningList.textContent = '';
           warnings.forEach(warning => { const li = document.createElement('div'); li.textContent = `・${warning}`; warningList.appendChild(li); });
-          document.getElementById('complete-message').textContent = `Dropboxに保存しました（${data.item_count || shippingItems.length}件・${data.group_count || 0}個口）`;
+          const itemCount = (data.artifacts || []).reduce((sum, artifact) => sum + (Number(artifact.item_count) || 0), 0);
+          document.getElementById('complete-message').textContent = `Dropboxに保存しました（${itemCount || shippingItems.length}件・${(data.artifacts || []).length}成果物）`;
           requestInFlight = false;
           showScreen('complete-screen');
           finishRequestPerformance(measurement, 'success');
@@ -1354,28 +1510,33 @@
           measurement = error.performanceMeasurement || measurement;
           requestInFlight = false;
           showToast('通信に失敗しました。もう一度お試しください。', 'error');
-          updateCameraMode();
-          returnToCamera();
+          showScreen('team-destination-screen');
           finishRequestPerformance(measurement, 'network_error');
         }
       }
 
+      function finalizeShipping() { showConsolidationScreen(); }
+
       document.getElementById('print-mode-button').addEventListener('click', startPrintMode);
       document.getElementById('ship-mode-button').addEventListener('click', showCarrierSelect);
-      document.getElementById('sagawa-button').addEventListener('click', () => startShippingMode('sagawa'));
-      document.getElementById('clickpost-button').addEventListener('click', () => startShippingMode('clickpost'));
+      document.getElementById('sagawa-button').addEventListener('click', () => startShippingMode());
       document.getElementById('carrier-back-button').addEventListener('click', showModeSelect);
       document.getElementById('retry-button').addEventListener('click', startCamera);
       document.getElementById('forbidden-button').addEventListener('click', () => showSignIn());
-      document.getElementById('shopify-destination-button').addEventListener('click', useShopifyDestination);
-      document.getElementById('representative-destination-button').addEventListener('click', showRepresentativeForm);
+      document.getElementById('individual-button').addEventListener('click', () => submitFinalize('individual'));
+      document.getElementById('single-parcel-button').addEventListener('click', showRepresentativeForm);
       document.getElementById('team-address-cancel').addEventListener('click', () => {
-        pendingShipScan = null;
-        returnToCamera();
+        document.getElementById('representative-form').hidden = true;
+        showConsolidationScreen();
       });
       document.getElementById('team-address-save').addEventListener('click', useRepresentativeDestination);
       document.getElementById('ship-finalize-button').addEventListener('click', finalizeShipping);
-      document.getElementById('complete-next-button').addEventListener('click', () => startShippingMode(carrier));
+      document.getElementById('shipping-issues-back').addEventListener('click', () => showConsolidationScreen());
+      document.getElementById('shipping-issues-confirm').addEventListener('click', () => {
+        if (!pendingFinalize) return;
+        submitFinalize(pendingFinalize.consolidation, pendingFinalize.destination, collectIssueResolutions());
+      });
+      document.getElementById('complete-next-button').addEventListener('click', () => startShippingMode());
       document.getElementById('install-hint-close').addEventListener('click', () => {
         document.getElementById('install-hint').classList.remove('show');
       });
