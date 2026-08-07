@@ -95,6 +95,8 @@
     .address-actions button { flex:1; }
     .warning-list { margin:16px 0 0; padding:12px 14px; border:1px solid var(--warn); border-radius:10px; color:#ffe3a3; text-align:left; font-size:13px; line-height:1.6; }
     .warning-list:empty { display:none; }
+    .artifact-breakdown { margin:16px 0 0; padding:12px 14px; border:1px solid #52617f; border-radius:10px; color:var(--text); text-align:left; font-size:13px; line-height:1.6; }
+    .artifact-breakdown:empty { display:none; }
   </style>
 </head>
 <body>
@@ -172,7 +174,7 @@
     <div class="card"><h1>発送前の確認</h1><p id="shipping-issues-message"></p><div id="shipping-issues-list" class="warning-list"></div><div class="address-actions"><button id="shipping-issues-back" class="choice-button" type="button">戻る</button><button id="shipping-issues-confirm" class="choice-button ship" type="button">確認して続行</button></div></div>
   </section>
   <section id="complete-screen" class="screen" aria-label="発送準備完了">
-    <div class="card"><h1>発送準備完了</h1><p id="complete-message"></p><div id="shipping-warnings" class="warning-list"></div><button id="complete-next-button" class="choice-button ship" type="button">発送準備を続ける</button></div>
+    <div class="card"><h1>発送準備完了</h1><p id="complete-message"></p><div id="shipping-artifact-breakdown" class="artifact-breakdown"></div><div id="shipping-warnings" class="warning-list"></div><button id="complete-next-button" class="choice-button ship" type="button">発送準備を続ける</button></div>
   </section>
   <canvas id="canvas"></canvas><div id="toast" role="status" aria-live="polite"></div>
   <aside id="install-hint" aria-label="ホーム画面への追加案内">
@@ -829,6 +831,20 @@
       function showToast(message, type) {
         toast.textContent = message || '処理に失敗しました';
         toast.className = 'show ' + (type || '');
+        if (toast.style) {
+          const activePanel = currentMode === 'shipping' ? document.getElementById('ship-controls')
+            : currentMode === 'print' ? document.getElementById('print-controls')
+            : null;
+          const rect = activePanel && typeof activePanel.getBoundingClientRect === 'function'
+            ? activePanel.getBoundingClientRect() : null;
+          const panelVisible = Boolean(activePanel && !activePanel.hidden && rect && rect.width > 0 && rect.height > 0);
+          if (panelVisible) {
+            const viewportHeight = typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : document.documentElement.clientHeight;
+            toast.style.bottom = `${Math.max(0, Math.round(viewportHeight - rect.top + 12))}px`;
+          } else {
+            toast.style.bottom = '';
+          }
+        }
         clearTimeout(toastTimer);
         toastTimer = setTimeout(() => { toast.className = ''; }, 3200);
       }
@@ -1516,12 +1532,26 @@
             finishRequestPerformance(measurement, 'api_error');
             return;
           }
-          const warnings = (data.artifacts || []).flatMap(artifact => artifact.warnings || []);
+          const artifacts = data.artifacts || [];
+          const warnings = artifacts.flatMap(artifact => artifact.warnings || []);
           const warningList = document.getElementById('shipping-warnings');
           warningList.textContent = '';
           warnings.forEach(warning => { const li = document.createElement('div'); li.textContent = `・${warning}`; warningList.appendChild(li); });
-          const itemCount = (data.artifacts || []).reduce((sum, artifact) => sum + (Number(artifact.item_count) || 0), 0);
-          document.getElementById('complete-message').textContent = `Dropboxに保存しました（${itemCount || shippingItems.length}件・${(data.artifacts || []).length}成果物）`;
+          const itemCount = artifacts.reduce((sum, artifact) => sum + (Number(artifact.item_count) || 0), 0);
+          document.getElementById('complete-message').textContent = `Dropboxに保存しました（${itemCount || shippingItems.length}件）`;
+          const carrierLabels = { sagawa: '佐川急便', yamato: 'ヤマト運輸', clickpost: 'クリックポスト' };
+          const breakdown = new Map();
+          artifacts.forEach(artifact => {
+            const key = artifact.carrier || '不明';
+            breakdown.set(key, (breakdown.get(key) || 0) + (Number(artifact.item_count) || 0));
+          });
+          const breakdownEl = document.getElementById('shipping-artifact-breakdown');
+          breakdownEl.textContent = '';
+          breakdown.forEach((count, carrier) => {
+            const line = document.createElement('div');
+            line.textContent = `・${carrierLabels[carrier] || carrier}: ${count}件`;
+            breakdownEl.appendChild(line);
+          });
           requestInFlight = false;
           showScreen('complete-screen');
           finishRequestPerformance(measurement, 'success');
