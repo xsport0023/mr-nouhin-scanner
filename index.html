@@ -1443,11 +1443,8 @@
       }
 
       function showCarrierConfirmation(consolidation, destination = null, existingState = null) {
+        if (!shippingItems.length) { showToast('発送準備の一覧が空です。', 'error'); return; }
         const parcelItems = shippingItems.filter(item => item.shipping_method === 'parcel');
-        if (!parcelItems.length) {
-          showToast('運送会社を確認できる宅配便明細がありません。', 'error');
-          return;
-        }
         const state = existingState || {
           consolidation,
           destination,
@@ -1457,6 +1454,16 @@
             return { ...item, confirmed_carrier: item.shipping_method === 'parcel' ? (item.suggested_carrier || '') : null };
           })
         };
+        // クリックポストだけのバッチには確認すべき運送会社が無い（配送方法で固定のため）。
+        // 確認画面を出さずにそのまま確定へ進む。
+        // 以前はここで「宅配便明細がありません」と止めており、**クリックポスト単体の
+        // 発送が一切確定できなかった**（2026-08-08 実機で発覚）。
+        if (!parcelItems.length) {
+          pendingCarrierConfirmation = null;
+          submitFinalize(state.consolidation, state.destination, {}, state);
+          return;
+        }
+
         pendingCarrierConfirmation = state;
         const list = document.getElementById('carrier-confirmation-list');
         list.textContent = '';
