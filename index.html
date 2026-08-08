@@ -168,8 +168,8 @@
           <label>会社名<input id="team-company" autocomplete="organization"></label>
           <label>電話番号<input id="team-phone" type="tel" autocomplete="tel"></label>
         </div>
-        <div class="address-actions"><button id="team-address-cancel" class="choice-button" type="button">戻る</button><button id="team-address-save" class="choice-button ship" type="button">この宛先でまとめる</button></div>
       </div>
+      <div class="choice-list"><button id="team-address-cancel" class="choice-button" type="button">戻る</button></div>
     </div>
   </section>
   <section id="carrier-confirmation-screen" class="screen" aria-label="運送会社確認">
@@ -995,9 +995,16 @@
       function returnToCamera() {
         requestInFlight = false;
         setScanFeedback(false);
+        cancelScheduledScan();
+        scanGeneration += 1;
+        // scanGeneration を進めたら decodeInFlight も必ず戻す（stopCamera_ と同じ作法）。
+        // scanFrame() の finally は generation が一致するときしか decodeInFlight を
+        // false に戻さないため、ここで進めたぶんだけ「デコード中のまま」で固まりうる。
+        // そうなると以後 scanFrame() が毎回先頭で return し、スキャンが永久に再開しない。
+        decodeInFlight = false;
+        scanning = true;
         showScreen('camera-screen');
         beginScanCycle();
-        if (!scanning) scanning = true;
         scheduleScan();
       }
 
@@ -1489,6 +1496,7 @@
           const select = document.createElement('select');
           select.className = 'carrier-confirmation-select';
           select.setAttribute('aria-label', `${labelText}の運送会社`);
+          select.appendChild(new Option('選択してください', '', true, false));
           [['sagawa', '佐川急便'], ['yamato', 'ヤマト運輸']].forEach(([value, text]) => {
             const option = new Option(text, value);
             select.appendChild(option);
@@ -1632,16 +1640,27 @@
       document.getElementById('retry-button').addEventListener('click', startCamera);
       document.getElementById('forbidden-button').addEventListener('click', () => showSignIn());
       document.getElementById('individual-button').addEventListener('click', () => showCarrierConfirmation('individual'));
-      document.getElementById('single-parcel-button').addEventListener('click', showRepresentativeForm);
+      // 「まとめ発送（1個口）」がまとめ発送の正規ボタン。1回目のタップで送付先の選択欄を開き、
+      // 2回目で確定する（旧「この宛先でまとめる」ボタンの役割を引き継いだ）。
+      // 分けていた頃は、フォームが既に開いている状態でこのボタンを押しても同じフォームを
+      // 出し直すだけで無反応に見えていた。
+      document.getElementById('single-parcel-button').addEventListener('click', () => {
+        if (document.getElementById('representative-form').hidden) {
+          showRepresentativeForm();
+          return;
+        }
+        useRepresentativeDestination();
+      });
       document.getElementById('team-manual-toggle').addEventListener('click', () => {
         document.getElementById('team-manual-fields').hidden = false;
         document.getElementById('team-manual-toggle').hidden = true;
       });
+      // 「戻る」はスキャン画面へ戻す。以前はフォームを畳んで同じ画面を出し直すだけで、
+      // どこへも戻れていなかった。
       document.getElementById('team-address-cancel').addEventListener('click', () => {
         document.getElementById('representative-form').hidden = true;
-        showConsolidationScreen();
+        returnToCamera();
       });
-      document.getElementById('team-address-save').addEventListener('click', useRepresentativeDestination);
       document.getElementById('ship-finalize-button').addEventListener('click', finalizeShipping);
       document.getElementById('carrier-confirmation-back').addEventListener('click', () => showConsolidationScreen());
       document.getElementById('carrier-confirmation-submit').addEventListener('click', confirmCarrierSelection);
