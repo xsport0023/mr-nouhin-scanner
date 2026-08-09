@@ -20,6 +20,7 @@
     html, body { width:100%; height:100%; margin:0; overflow:hidden; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; }
     .screen { position:fixed; inset:0; display:none; flex-direction:column; align-items:center; overflow-y:auto; -webkit-overflow-scrolling:touch; }
     .screen.active { display:flex; }
+    .screen.screen-transition-locked { pointer-events:none; }
     #camera-screen { background:#000; overflow:hidden; }
     #video { width:100%; height:100%; object-fit:cover; }
     .camera-overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; pointer-events:none; }
@@ -90,6 +91,7 @@
     .carrier-confirmation-select { width:130px; margin:0; padding:9px 8px; border:1px solid #6ee7d8; border-radius:8px; background:#0e2525; color:#fff; font:inherit; }
     .carrier-fixed { flex:0 0 auto; color:#a7d8d0; font-size:12px; }
     .address-form { display:grid; gap:9px; margin-top:14px; text-align:left; }
+    .address-form[hidden] { display:none; }
     #team-manual-fields:not([hidden]) { display:grid; gap:9px; }
     #team-manual-toggle { background:#2b3550; border:1px solid #52617f; color:#fff; }
     .address-form label { color:var(--muted); font-size:12px; }
@@ -155,7 +157,7 @@
         <button id="individual-button" class="choice-button ship" type="button">個別発送（1注文1個口）</button>
         <button id="single-parcel-button" class="choice-button ship" type="button">まとめ発送（1個口）</button>
       </div>
-      <div id="representative-form" class="address-form" hidden>
+      <div id="representative-form" class="address-form">
         <label>代表送付先（マスタ）<select id="team-destination-select"><option value="">選択してください</option></select></label>
         <button id="team-manual-toggle" class="choice-button" type="button">または、送付先を手入力する</button>
         <div id="team-manual-fields" hidden>
@@ -167,6 +169,7 @@
           <label>氏名<input id="team-name" autocomplete="name"></label>
           <label>会社名<input id="team-company" autocomplete="organization"></label>
           <label>電話番号<input id="team-phone" type="tel" autocomplete="tel"></label>
+          <button id="team-manual-close" class="choice-button" type="button">手入力をやめる</button>
         </div>
       </div>
       <div class="choice-list"><button id="team-address-cancel" class="choice-button" type="button">戻る</button></div>
@@ -218,6 +221,9 @@
       let pendingFinalize = null;
       let pendingCarrierConfirmation = null;
       let pendingIssueData = null;
+      let finalizeInFlight = false;
+      let screenTransitionUnlockTimer = null;
+      const SCREEN_TRANSITION_LOCK_MS = 350;
       let autoConfirmedIssueCodes = [];
       let finalizeRequestId = '';
       let finalizeTransportAttempt = 0;
@@ -827,8 +833,21 @@
       };
 
       function showScreen(id) {
-        document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active'));
-        document.getElementById(id).classList.add('active');
+        if (screenTransitionUnlockTimer !== null) {
+          clearTimeout(screenTransitionUnlockTimer);
+          screenTransitionUnlockTimer = null;
+        }
+        document.querySelectorAll('.screen').forEach(screen => {
+          screen.classList.remove('active');
+          screen.classList.remove('screen-transition-locked');
+        });
+        const nextScreen = document.getElementById(id);
+        nextScreen.classList.add('active');
+        nextScreen.classList.add('screen-transition-locked');
+        screenTransitionUnlockTimer = setTimeout(() => {
+          nextScreen.classList.remove('screen-transition-locked');
+          screenTransitionUnlockTimer = null;
+        }, SCREEN_TRANSITION_LOCK_MS);
       }
 
       function showLoading(message) {
@@ -928,6 +947,8 @@
         shippingContext = null;
         pendingFinalize = null;
         pendingIssueData = null;
+        finalizeInFlight = false;
+        resetRepresentativeDestinationState_();
         finalizeRequestId = createRequestId('fin');
         finalizeTransportAttempt = 0;
         updateCameraMode();
@@ -1386,6 +1407,46 @@
           option.dataset.destination = JSON.stringify(destination);
           select.appendChild(option);
         });
+        populateTeamPrefectures_();
+      }
+
+      function populateTeamPrefectures_() {
+        const select = document.getElementById('team-prefecture');
+        if (!select) return;
+        const currentValue = select.value;
+        select.textContent = '';
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = '選択してください';
+        select.appendChild(empty);
+        JAPANESE_PREFECTURES.forEach(prefecture => {
+          const option = document.createElement('option');
+          option.value = prefecture;
+          option.textContent = prefecture;
+          select.appendChild(option);
+        });
+        select.value = JAPANESE_PREFECTURES.includes(currentValue) ? currentValue : '';
+      }
+
+      function clearManualDestinationFields_() {
+        ['team-postal-code', 'team-city', 'team-address', 'team-address2', 'team-name', 'team-company', 'team-phone']
+          .forEach(id => { const input = document.getElementById(id); if (input) input.value = ''; });
+        const prefecture = document.getElementById('team-prefecture');
+        if (prefecture) prefecture.value = '';
+      }
+
+      function closeManualDestinationFields_() {
+        clearManualDestinationFields_();
+        const fields = document.getElementById('team-manual-fields');
+        const toggle = document.getElementById('team-manual-toggle');
+        if (fields) fields.hidden = true;
+        if (toggle) toggle.hidden = false;
+      }
+
+      function resetRepresentativeDestinationState_() {
+        const master = document.getElementById('team-destination-select');
+        if (master) master.value = '';
+        closeManualDestinationFields_();
       }
 
       function showConsolidationScreen() {
@@ -1393,37 +1454,28 @@
         scanning = false;
         requestInFlight = false;
         document.getElementById('team-order-message').textContent = `${shippingItems.length}件の発送方法を選択してください。`;
-        document.getElementById('representative-form').hidden = true;
         showScreen('team-destination-screen');
-      }
-
-      function showRepresentativeForm() {
-        document.getElementById('representative-form').hidden = false;
-        document.getElementById('team-manual-fields').hidden = true;
-        document.getElementById('team-manual-toggle').hidden = false;
-        JAPANESE_PREFECTURES.forEach(prefecture => {
-          const select = document.getElementById('team-prefecture');
-          if ([...select.options].some(option => option.value === prefecture)) return;
-          const option = document.createElement('option');
-          option.value = prefecture;
-          option.textContent = prefecture;
-          select.appendChild(option);
-        });
       }
 
       function destinationFromForm() {
         const select = document.getElementById('team-destination-select');
         const selected = select.options[select.selectedIndex];
         if (selected && selected.dataset.destination) return JSON.parse(selected.dataset.destination);
+        // 手入力欄が閉じている＝手入力モードではない。閉じる操作は値をクリアするが、
+        // それに依存せず「開いている時だけ読む」をここで保証する。クリアを伴わない
+        // 非表示経路が将来追加されても、古い住所が送信されることはない。
+        const manualFields = document.getElementById('team-manual-fields');
+        const manualActive = !!manualFields && !manualFields.hidden;
+        const read = id => (manualActive ? document.getElementById(id).value.trim() : '');
         return {
-          postal_code: document.getElementById('team-postal-code').value.trim(),
-          prefecture: document.getElementById('team-prefecture').value,
-          city: document.getElementById('team-city').value.trim(),
-          address1: document.getElementById('team-address').value.trim(),
-          address2: document.getElementById('team-address2').value.trim(),
-          name: document.getElementById('team-name').value.trim(),
-          company: document.getElementById('team-company').value.trim(),
-          phone: document.getElementById('team-phone').value.trim()
+          postal_code: read('team-postal-code'),
+          prefecture: manualActive ? document.getElementById('team-prefecture').value : '',
+          city: read('team-city'),
+          address1: read('team-address'),
+          address2: read('team-address2'),
+          name: read('team-name'),
+          company: read('team-company'),
+          phone: read('team-phone')
         };
       }
 
@@ -1579,6 +1631,8 @@
 
       async function submitFinalize(consolidation, destination = null, issueResolutions = {}, carrierState = null) {
         if (!shippingItems.length) { showToast('発送準備の一覧が空です。', 'error'); return; }
+        if (finalizeInFlight) return;
+        finalizeInFlight = true;
         scanning = false;
         requestInFlight = true;
         showLoading('伝票を生成しています…');
@@ -1598,8 +1652,9 @@
           const result = await fetchJsonWithPerformance('ship_prep_finalize', body, null);
           const data = result.data;
           measurement = result.measurement;
-          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
+          if (handleAuthError(data)) { finalizeInFlight = false; finishRequestPerformance(measurement, 'auth_error'); return; }
           if (!data.ok) {
+            finalizeInFlight = false;
             requestInFlight = false;
             if (Array.isArray(data.issues)) renderShippingIssues(data);
             else { showToast(data.error || '発送準備を確定できませんでした。', 'error'); showScreen('team-destination-screen'); }
@@ -1627,10 +1682,12 @@
             breakdownEl.appendChild(line);
           });
           requestInFlight = false;
+          finalizeInFlight = false;
           showScreen('complete-screen');
           finishRequestPerformance(measurement, 'success');
         } catch (error) {
           measurement = error.performanceMeasurement || measurement;
+          finalizeInFlight = false;
           requestInFlight = false;
           showToast('通信に失敗しました。もう一度お試しください。', 'error');
           showScreen('team-destination-screen');
@@ -1647,25 +1704,20 @@
       document.getElementById('retry-button').addEventListener('click', startCamera);
       document.getElementById('forbidden-button').addEventListener('click', () => showSignIn());
       document.getElementById('individual-button').addEventListener('click', () => showCarrierConfirmation('individual'));
-      // 「まとめ発送（1個口）」がまとめ発送の正規ボタン。1回目のタップで送付先の選択欄を開き、
-      // 2回目で確定する（旧「この宛先でまとめる」ボタンの役割を引き継いだ）。
-      // 分けていた頃は、フォームが既に開いている状態でこのボタンを押しても同じフォームを
-      // 出し直すだけで無反応に見えていた。
-      document.getElementById('single-parcel-button').addEventListener('click', () => {
-        if (document.getElementById('representative-form').hidden) {
-          showRepresentativeForm();
-          return;
-        }
-        useRepresentativeDestination();
+      // 代表送付先は常時表示。「まとめ発送」は検証して次へ進む単一機能とする。
+      document.getElementById('single-parcel-button').addEventListener('click', useRepresentativeDestination);
+      document.getElementById('team-destination-select').addEventListener('change', event => {
+        if (event.target.value) closeManualDestinationFields_();
       });
       document.getElementById('team-manual-toggle').addEventListener('click', () => {
+        document.getElementById('team-destination-select').value = '';
         document.getElementById('team-manual-fields').hidden = false;
         document.getElementById('team-manual-toggle').hidden = true;
       });
+      document.getElementById('team-manual-close').addEventListener('click', closeManualDestinationFields_);
       // 「戻る」はスキャン画面へ戻す。以前はフォームを畳んで同じ画面を出し直すだけで、
       // どこへも戻れていなかった。
       document.getElementById('team-address-cancel').addEventListener('click', () => {
-        document.getElementById('representative-form').hidden = true;
         returnToCamera();
       });
       document.getElementById('ship-finalize-button').addEventListener('click', finalizeShipping);
