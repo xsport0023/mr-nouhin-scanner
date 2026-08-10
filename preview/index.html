@@ -1,0 +1,2173 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="icon" href="./favicon-32.png" sizes="32x32">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="納品ちゃん">
+  <meta name="theme-color" content="#090b12">
+  <title>印刷タグ付けスキャナ</title>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.2.1/umd/zxing-browser.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    :root { --mode-color:#e879f9; --bg:#090b12; --surface:#171b28; --text:#f5f7ff; --muted:#a6aec4; --danger:#ff6262; --ok:#35d58a; --warn:#f5b84b; }
+    * { box-sizing:border-box; }
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; }
+    .screen { position:fixed; inset:0; display:none; flex-direction:column; align-items:center; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+    .screen.active { display:flex; }
+    .screen.screen-transition-locked { pointer-events:none; }
+    #camera-screen { background:#000; overflow:hidden; }
+    #video { width:100%; height:100%; object-fit:cover; }
+    .camera-overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; pointer-events:none; }
+    .topbar { width:100%; padding:calc(18px + env(safe-area-inset-top)) 20px 18px; background:linear-gradient(#090b12ee,transparent); display:flex; align-items:center; gap:10px; }
+    .mode-dot { width:10px; height:10px; border-radius:50%; background:var(--mode-color); box-shadow:0 0 12px var(--mode-color); }
+    .title { font-size:18px; font-weight:800; letter-spacing:.04em; }
+    .subtitle { margin-left:auto; color:#d5d9e8; font-size:12px; }
+    .scan-frame { position:absolute; top:50%; left:50%; width:min(72vw,300px); aspect-ratio:1; transform:translate(-50%,-50%); }
+    .scan-frame::before, .scan-frame::after, .corner { content:""; position:absolute; width:42px; height:42px; border:4px solid #fff; }
+    .scan-frame::before { top:0; left:0; border-right:0; border-bottom:0; border-radius:8px 0 0; }
+    .scan-frame::after { top:0; right:0; border-left:0; border-bottom:0; border-radius:0 8px 0 0; }
+    .corner.br { right:0; bottom:0; border-left:0; border-top:0; border-radius:0 0 8px; }
+    .corner.bl { left:0; bottom:0; border-right:0; border-top:0; border-radius:0 0 0 8px; }
+    .scan-line { position:absolute; left:14px; right:14px; height:3px; background:var(--mode-color); box-shadow:0 0 10px var(--mode-color); animation:scan 2s ease-in-out infinite; }
+    .scan-frame.detected::before, .scan-frame.detected::after, .scan-frame.detected .corner { border-color:var(--ok); box-shadow:0 0 18px #35d58aaa; }
+    .scan-frame.detected .scan-line { background:var(--ok); box-shadow:0 0 14px var(--ok); animation-play-state:paused; }
+    .scan-feedback { position:absolute; inset:50% auto auto 50%; display:none; min-width:210px; transform:translate(-50%,-50%); padding:12px 16px; border:1px solid var(--ok); border-radius:999px; background:#071d16e8; color:#d7ffec; font-size:14px; font-weight:800; text-align:center; box-shadow:0 8px 28px #0009; }
+    .scan-frame.detected .scan-feedback { display:block; }
+    @keyframes scan { 0%,100% { top:16px; opacity:.3; } 50% { top:calc(100% - 19px); opacity:1; } }
+    .hint { position:absolute; bottom:calc(36px + env(safe-area-inset-bottom)); padding:10px 18px; border-radius:999px; background:#0009; color:#fff; font-size:14px; }
+    #loading-screen, #error-screen, #forbidden-screen { padding:28px; text-align:center; background:var(--bg); }
+    #signin-screen { padding:28px; text-align:center; background:var(--bg); }
+    #mode-screen, #carrier-screen, #completion-mode-screen, #team-destination-screen, #carrier-confirmation-screen, #shipping-issues-screen, #complete-screen, #completion-result-screen { padding:28px; text-align:center; background:var(--bg); }
+    .card { width:min(100%,420px); margin:auto; padding:28px 22px; border:1px solid #2b3248; border-radius:20px; background:var(--surface); }
+    h1 { margin:0 0 12px; font-size:22px; } p { margin:8px 0; color:var(--muted); line-height:1.7; white-space:pre-wrap; }
+    .spinner { width:42px; height:42px; margin:0 auto 18px; border:4px solid #343b52; border-top-color:var(--mode-color); border-radius:50%; animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    button { margin-top:18px; width:100%; padding:14px 18px; border:0; border-radius:12px; background:var(--mode-color); color:#17091a; font-size:16px; font-weight:800; }
+    #toast { position:fixed; left:18px; right:18px; bottom:calc(26px + env(safe-area-inset-bottom)); z-index:20; transform:translateY(140%); opacity:0; transition:transform .2s,opacity .2s; padding:15px 17px; border-radius:14px; background:#202638f5; border:1px solid #44506d; box-shadow:0 8px 30px #0008; font-size:15px; line-height:1.5; }
+    #toast.show { transform:translateY(0); opacity:1; }
+    #toast.success { border-color:var(--ok); } #toast.warning { border-color:var(--warn); } #toast.error { border-color:var(--danger); }
+    #install-hint { position:fixed; left:14px; right:14px; bottom:calc(18px + env(safe-area-inset-bottom)); z-index:25; display:none; align-items:center; gap:12px; padding:13px 14px; border:1px solid #596581; border-radius:14px; background:#171b28f5; box-shadow:0 8px 26px #0009; color:var(--text); font-size:13px; line-height:1.5; }
+    #install-hint.show { display:flex; }
+    #install-hint p { flex:1; margin:0; color:var(--text); }
+    #install-hint button { flex:0 0 auto; width:auto; margin:0; padding:8px 12px; background:#303951; color:var(--text); font-size:13px; }
+    #canvas { display:none; }
+    #g_id_signin { display:flex; justify-content:center; margin-top:22px; min-height:44px; }
+    .choice-list { display:flex; flex-direction:column; gap:12px; margin-top:22px; }
+    .choice-button { margin:0; color:#fff; background:#2b3550; border:1px solid #52617f; }
+    .debug-option { display:flex; align-items:center; justify-content:center; gap:10px; margin-top:20px; color:var(--muted); font-size:14px; }
+    .debug-option input { width:20px; height:20px; accent-color:var(--mode-color); }
+    #perf-panel { position:absolute; z-index:16; top:calc(76px + env(safe-area-inset-top)); left:10px; right:10px; max-height:42vh; overflow:auto; padding:11px 12px; border:1px solid #7180a5; border-radius:12px; background:#090b12e8; box-shadow:0 8px 24px #000a; pointer-events:auto; text-align:left; }
+    #perf-panel[hidden] { display:none; }
+    #perf-panel strong { display:block; margin-bottom:6px; color:#fff; font-size:13px; }
+    #perf-output { margin:0; color:#dce4ff; font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-word; }
+    .choice-button.ship { background:#0f766e; border-color:#2dd4bf; }
+    .print-controls { position:absolute; left:12px; right:12px; bottom:calc(76px + env(safe-area-inset-bottom)); z-index:12; padding:10px 12px; border:1px solid #e879f988; border-radius:14px; background:#24102bef; pointer-events:auto; text-align:left; }
+    .print-summary { color:#fce7ff; font-size:13px; line-height:1.5; }
+    .print-summary strong { color:#fff; }
+    .print-complete { margin-top:5px; color:#86efac; font-size:12px; font-weight:700; }
+    .print-errors { display:flex; flex-direction:column; gap:6px; max-height:120px; margin-top:7px; overflow:auto; }
+    .print-errors:empty { display:none; }
+    .print-error-row { display:grid; grid-template-columns:1fr auto auto; align-items:center; gap:6px; padding:7px 8px; border:1px solid #ff626288; border-radius:8px; background:#3a151bee; color:#ffe1e1; font-size:11px; }
+    .print-error-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .print-error-action { width:auto; margin:0; padding:6px 8px; border:1px solid #ff9d9d; background:#592129; color:#fff; font-size:11px; }
+    .ship-controls { position:absolute; left:12px; right:12px; bottom:calc(16px + env(safe-area-inset-bottom)); z-index:12; padding:12px; border:1px solid #2dd4bf88; border-radius:16px; background:#082f2eef; pointer-events:auto; }
+    .ship-summary { display:flex; justify-content:space-between; align-items:center; gap:10px; color:#ccfbf1; font-size:13px; }
+    .ship-summary strong { font-size:18px; }
+    .ship-list { max-height:130px; overflow:auto; margin-top:8px; display:flex; flex-direction:column; gap:5px; text-align:left; }
+    .ship-item { display:flex; align-items:center; gap:8px; padding:7px 9px; border-radius:8px; background:#134e4a; font-size:12px; }
+    .ship-item span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ship-remove { flex:0 0 auto; width:28px; margin:0; padding:4px; border:1px solid #99f6e4; background:transparent; color:#ccfbf1; font-size:16px; line-height:1; }
+    .ship-finalize { margin-top:10px; padding:10px; background:#14b8a6; color:#042f2e; }
+    .completion-controls { position:absolute; left:12px; right:12px; bottom:calc(16px + env(safe-area-inset-bottom)); z-index:12; padding:12px; border:1px solid #60a5fa88; border-radius:16px; background:#102a4aee; pointer-events:auto; text-align:left; }
+    .completion-summary { display:flex; justify-content:space-between; align-items:center; gap:10px; color:#dbeafe; font-size:13px; }
+    .completion-summary strong { font-size:18px; }
+    .completion-list { max-height:130px; overflow:auto; margin-top:8px; display:flex; flex-direction:column; gap:5px; text-align:left; }
+    .completion-item { padding:7px 9px; border-radius:8px; background:#1e3a5f; color:#eff6ff; font-size:12px; }
+    .completion-action { margin-top:10px; padding:10px; background:#3b82f6; color:#eff6ff; }
+    .manual-scan-controls { position:absolute; left:18px; right:18px; bottom:calc(112px + env(safe-area-inset-bottom)); z-index:13; display:flex; gap:8px; align-items:center; padding:10px; border:1px solid #52617f; border-radius:12px; background:#090b12e8; pointer-events:auto; }
+    .manual-scan-controls[hidden] { display:none; }
+    .manual-scan-controls input { min-width:0; flex:1; padding:10px; border:1px solid #7180a5; border-radius:8px; background:#0e1320; color:#fff; font:inherit; }
+    .manual-scan-controls button { width:auto; margin:0; padding:10px 12px; font-size:13px; }
+    .completion-result { margin-top:18px; padding:16px; border:1px solid #60a5fa; border-radius:12px; background:#102a4a; text-align:left; }
+    .completion-tracking-number { margin:8px 0 14px; color:#fff; font:700 28px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; letter-spacing:.04em; word-break:break-all; }
+    .completion-result-row { display:flex; justify-content:space-between; gap:12px; padding:5px 0; color:#dbeafe; font-size:13px; }
+    .completion-result-row strong { color:#fff; text-align:right; word-break:break-word; }
+    .carrier-confirmation-list { display:flex; flex-direction:column; gap:9px; margin-top:16px; text-align:left; }
+    .carrier-confirmation-row { display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid #2b8a7d; border-radius:10px; background:#0f3b38; }
+    .carrier-confirmation-label { flex:1; min-width:0; color:#d5fff7; font-size:13px; line-height:1.45; }
+    .carrier-confirmation-label small { display:block; color:#a7d8d0; font-size:11px; }
+    .carrier-confirmation-select { width:130px; margin:0; padding:9px 8px; border:1px solid #6ee7d8; border-radius:8px; background:#0e2525; color:#fff; font:inherit; }
+    .carrier-fixed { flex:0 0 auto; color:#a7d8d0; font-size:12px; }
+    .address-form { display:grid; gap:9px; margin-top:14px; text-align:left; }
+    .address-form[hidden] { display:none; }
+    #team-manual-fields:not([hidden]) { display:grid; gap:9px; }
+    #team-manual-toggle { background:#2b3550; border:1px solid #52617f; color:#fff; }
+    .address-form label { color:var(--muted); font-size:12px; }
+    .address-form input, .address-form select { width:100%; padding:10px; border:1px solid #52617f; border-radius:8px; background:#0e1320; color:#fff; font:inherit; appearance:none; -webkit-appearance:none; }
+    .address-actions { display:flex; gap:9px; }
+    .address-actions button { flex:1; }
+    .warning-list { margin:16px 0 0; padding:12px 14px; border:1px solid var(--warn); border-radius:10px; color:#ffe3a3; text-align:left; font-size:13px; line-height:1.6; }
+    .warning-list:empty { display:none; }
+    .artifact-breakdown { margin:16px 0 0; padding:12px 14px; border:1px solid #52617f; border-radius:10px; color:var(--text); text-align:left; font-size:13px; line-height:1.6; }
+    .artifact-breakdown:empty { display:none; }
+  </style>
+</head>
+<body>
+  <section id="signin-screen" class="screen active" aria-label="サインイン">
+    <div class="card">
+      <h1>納品ちゃんログイン</h1>
+      <p id="signin-message">Googleアカウントでサインインしてください。</p>
+      <div id="g_id_signin" class="g_id_signin"></div>
+    </div>
+  </section>
+  <section id="mode-screen" class="screen" aria-label="モード選択">
+    <div class="card"><h1>処理モードを選択</h1><p>実行する作業を選んでください。</p>
+      <div class="choice-list">
+        <button id="print-mode-button" class="choice-button" type="button">印刷タグ付け</button>
+        <button id="ship-mode-button" class="choice-button ship" type="button">発送準備</button>
+        <button id="completion-mode-button" class="choice-button ship" type="button">発送完了</button>
+      </div>
+      <label class="debug-option"><input id="perf-toggle" type="checkbox">速度計測を表示</label>
+    </div>
+  </section>
+  <section id="carrier-screen" class="screen" aria-label="発送方法選択">
+    <div class="card"><h1>発送準備</h1><p>QRを読み取り、締め時に個別発送またはまとめ発送を選択します。</p>
+      <div class="choice-list">
+        <button id="sagawa-button" class="choice-button ship" type="button">発送準備を開始</button>
+        <button id="carrier-back-button" class="choice-button" type="button">モード選択へ戻る</button>
+      </div>
+    </div>
+  </section>
+  <section id="completion-mode-screen" class="screen" aria-label="発送完了方法選択">
+    <div class="card"><h1>発送完了</h1><p>発送方法を選び、注文書QRと実物伝票を対応させます。</p>
+      <div class="choice-list">
+        <button id="completion-individual-button" class="choice-button ship" type="button">個別発送</button>
+        <button id="completion-single-parcel-button" class="choice-button ship" type="button">まとめ発送</button>
+        <button id="completion-back-button" class="choice-button" type="button">モード選択へ戻る</button>
+      </div>
+    </div>
+  </section>
+  <section id="camera-screen" class="screen" aria-label="印刷モード">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="camera-overlay">
+      <div class="topbar"><span class="mode-dot"></span><span id="camera-title" class="title">印刷モード</span><span id="camera-subtitle" class="subtitle">QRをかざしてください</span></div>
+      <div id="scan-frame" class="scan-frame"><span class="corner br"></span><span class="corner bl"></span><span class="scan-line"></span><span id="scan-feedback" class="scan-feedback" role="status" aria-live="polite">QR読取済み・照会中…</span></div>
+      <div id="camera-hint" class="hint">スキャンすると自動で印刷タグを付けます</div>
+      <aside id="perf-panel" aria-label="速度計測結果" hidden><strong>速度計測（端末内のみ）</strong><pre id="perf-output">計測待機中</pre></aside>
+      <div id="print-controls" class="print-controls" hidden>
+        <div id="print-summary" class="print-summary">受付 <strong>0</strong> / 完了 0 / 待ち 0 / 処理中 0 / エラー 0</div>
+        <div id="print-complete" class="print-complete"></div>
+        <div id="print-errors" class="print-errors" aria-live="polite"></div>
+      </div>
+      <div id="ship-controls" class="ship-controls" hidden>
+        <div class="ship-summary"><span><span id="carrier-label">発送準備</span> / スキャン済み</span><strong id="ship-count">0件</strong></div>
+        <div id="ship-list" class="ship-list"></div>
+        <button id="ship-finalize-button" class="ship-finalize" type="button">ここで締める</button>
+      </div>
+      <div id="completion-controls" class="completion-controls" hidden>
+        <div class="completion-summary"><span id="completion-step-label">注文書QR</span><strong id="completion-count">0件</strong></div>
+        <div id="completion-list" class="completion-list"></div>
+        <div id="completion-candidates" class="completion-list" hidden></div>
+        <button id="completion-close-orders" class="completion-action" type="button" hidden>注文スキャンを締める</button>
+        <button id="completion-close-label" class="completion-action" type="button" hidden>伝票スキャンを締める</button>
+      </div>
+      <div id="manual-scan-controls" class="manual-scan-controls" hidden>
+        <input id="manual-scan-input" inputmode="text" autocomplete="off" placeholder="読み取る値を入力">
+        <button id="manual-scan-submit" type="button">入力</button>
+        <button id="manual-scan-cancel" type="button">閉じる</button>
+      </div>
+    </div>
+  </section>
+  <section id="loading-screen" class="screen"><div class="card"><div class="spinner"></div><p id="loading-message">カメラを準備しています…</p></div></section>
+  <section id="error-screen" class="screen"><div class="card"><h1>処理できませんでした</h1><p id="error-message"></p><button id="retry-button" type="button">カメラに戻る</button></div></section>
+  <section id="forbidden-screen" class="screen"><div class="card"><h1>アクセスできません</h1><p id="forbidden-message">許可されたGoogleアカウントでサインインしてください。</p><button id="forbidden-button" type="button">サインイン画面へ戻る</button></div></section>
+  <section id="team-destination-screen" class="screen" aria-label="発送単位と送付先選択">
+    <div class="card"><h1>発送方法と送付先</h1><p id="team-order-message"></p>
+      <div class="choice-list">
+        <button id="individual-button" class="choice-button ship" type="button">個別発送（1注文1個口）</button>
+        <button id="single-parcel-button" class="choice-button ship" type="button">まとめ発送（1個口）</button>
+      </div>
+      <div id="representative-form" class="address-form">
+        <label>代表送付先（マスタ）<select id="team-destination-select"><option value="">選択してください</option></select></label>
+        <button id="team-manual-toggle" class="choice-button" type="button">または、送付先を手入力する</button>
+        <div id="team-manual-fields" hidden>
+          <label>郵便番号<input id="team-postal-code" autocomplete="postal-code"></label>
+          <label>都道府県<select id="team-prefecture"><option value="">選択してください</option></select></label>
+          <label>市区町村<input id="team-city" autocomplete="address-level2"></label>
+          <label>番地<input id="team-address" autocomplete="street-address"></label>
+          <label>建物名<input id="team-address2" autocomplete="address-line2"></label>
+          <label>氏名<input id="team-name" autocomplete="name"></label>
+          <label>会社名<input id="team-company" autocomplete="organization"></label>
+          <label>電話番号<input id="team-phone" type="tel" autocomplete="tel"></label>
+          <button id="team-manual-close" class="choice-button" type="button">手入力をやめる</button>
+        </div>
+      </div>
+      <div class="choice-list"><button id="team-address-cancel" class="choice-button" type="button">戻る</button></div>
+    </div>
+  </section>
+  <section id="carrier-confirmation-screen" class="screen" aria-label="運送会社確認">
+    <div class="card"><h1>運送会社の確認</h1><p id="carrier-confirmation-message">サジェスト内容を確認してください。変更する明細だけ選び直せます。</p>
+      <div id="carrier-confirmation-list" class="carrier-confirmation-list"></div>
+      <div class="address-actions"><button id="carrier-confirmation-back" class="choice-button" type="button">戻る</button><button id="carrier-confirmation-submit" class="choice-button ship" type="button">この内容で確定</button></div>
+    </div>
+  </section>
+  <section id="shipping-issues-screen" class="screen" aria-label="発送確認">
+    <div class="card"><h1>発送前の確認</h1><p id="shipping-issues-message"></p><div id="shipping-issues-list" class="warning-list"></div><div class="address-actions"><button id="shipping-issues-back" class="choice-button" type="button">戻る</button><button id="shipping-issues-confirm" class="choice-button ship" type="button">確認して続行</button></div></div>
+  </section>
+  <section id="complete-screen" class="screen" aria-label="発送準備完了">
+    <div class="card"><h1>発送準備完了</h1><p id="complete-message"></p><div id="shipping-artifact-breakdown" class="artifact-breakdown"></div><div id="shipping-warnings" class="warning-list"></div><button id="complete-next-button" class="choice-button ship" type="button">発送準備を続ける</button></div>
+  </section>
+  <section id="completion-result-screen" class="screen" aria-label="発送完了確認">
+    <div class="card"><h1>発送完了の確認</h1><p>実物伝票の印字と、画面の追跡番号を照合してください。</p>
+      <div class="completion-result">
+        <div id="completion-tracking-number" class="completion-tracking-number"></div>
+        <div class="completion-result-row"><span>注文番号</span><strong id="completion-result-orders"></strong></div>
+        <div class="completion-result-row"><span>発送ID</span><strong id="completion-result-shipment">P4照合待ち</strong></div>
+        <div class="completion-result-row"><span>運送会社</span><strong id="completion-result-carrier">P4照合待ち</strong></div>
+        <div class="completion-result-row"><span>Trelloカード</span><strong id="completion-result-card">P4照合待ち</strong></div>
+      </div>
+      <p id="completion-result-notice">P3/P4の照合結果を受け取るまで発送確定はできません。</p>
+      <div class="address-actions"><button id="completion-result-cancel" class="choice-button" type="button">戻る</button><button id="completion-confirm-button" class="choice-button ship" type="button" disabled>印字と一致・発送確定</button></div>
+    </div>
+  </section>
+  <canvas id="canvas"></canvas><div id="toast" role="status" aria-live="polite"></div>
+  <aside id="install-hint" aria-label="ホーム画面への追加案内">
+    <p>共有・メニューボタンから「ホーム画面に追加」を選ぶと、次回からすぐ起動できます。</p>
+    <button id="install-hint-close" type="button">閉じる</button>
+  </aside>
+
+  <script>
+    (() => {
+      const GAS_URL = 'https://script.google.com/macros/s/AKfycbz1kAMMqL9AefMPCm4RJyp-bgwUovbKVUotBAhAY0l5lTahrxJq4ua-dExrp0SrdBhJ/exec';
+      const GOOGLE_CLIENT_ID = '247141824181-si649s1bi3phv2vop6ieqf1notas3jlm.apps.googleusercontent.com';
+      const PAGE_STARTED_AT = performance.now();
+      const video = document.getElementById('video');
+      const canvas = document.getElementById('canvas');
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      const toast = document.getElementById('toast');
+      const scanFrameElement = document.getElementById('scan-frame');
+      const perfToggle = document.getElementById('perf-toggle');
+      const perfPanel = document.getElementById('perf-panel');
+      const perfOutput = document.getElementById('perf-output');
+      let stream = null;
+      let scanning = false;
+      let requestInFlight = false;
+      let lastScannedValue = '';
+      let lastScannedAt = 0;
+      let lastRejectedValue = '';
+      let lastRejectedAt = 0;
+      let toastTimer = null;
+      let idToken = '';
+      let currentMode = '';
+      let completionConsolidation = '';
+      let completionStep = '';
+      let completionOrders = [];
+      let completionRawTrackingValue = '';
+      let completionLabelValues = [];
+      let completionSessionShipmentId = '';
+      let completionExpectedOrderCount = 0;
+      let completionPendingOrderId = '';
+      let completionConfirmedTracking = '';
+      let completionPlanId = '';
+      let completionNotify = null;
+      let completionCardsMissing = [];
+      let shippingItems = [];
+      let shippingContext = null;
+      let pendingFinalize = null;
+      let pendingCarrierConfirmation = null;
+      let pendingIssueData = null;
+      let finalizeInFlight = false;
+      let screenTransitionUnlockTimer = null;
+      const SCREEN_TRANSITION_LOCK_MS = 350;
+      let autoConfirmedIssueCodes = [];
+      let finalizeRequestId = '';
+      let finalizeTransportAttempt = 0;
+      let serverEpochAtSync = null;
+      let performanceNowAtSync = null;
+      const JAPANESE_PREFECTURES = ['北海道','青森県','岩手県','宮城県','秋田県','山形県','福島県','茨城県','栃木県','群馬県','埼玉県','千葉県','東京都','神奈川県','新潟県','富山県','石川県','福井県','山梨県','長野県','岐阜県','静岡県','愛知県','三重県','滋賀県','京都府','大阪府','兵庫県','奈良県','和歌山県','鳥取県','島根県','岡山県','広島県','山口県','徳島県','香川県','愛媛県','高知県','福岡県','佐賀県','長崎県','熊本県','大分県','宮崎県','鹿児島県','沖縄県'];
+      const SCAN_INTERVAL_MS = 16;
+      const SCAN_ROI_FRACTION = 0.75;
+      let scanTimer = null;
+      let scanTimerType = '';
+      let decodeInFlight = false;
+      let scanGeneration = 0;
+      let barcodeDetector = null;
+      let barcodeDetectorSupportedFormats = [];
+      let zxingReader = null;
+      let zxingReaderProfile = '';
+      let zxingInitError = '';
+      let canvasSide = 0;
+      let debugPerformanceEnabled = false;
+      let cameraPerformance = null;
+      let activeScanPerformance = null;
+      let performanceSequence = 0;
+      let performanceHistory = [];
+      let lastRequestCompletedAt = null;
+      const MAX_PRINT_REQUESTS = 1;
+      let printJobs = [];
+      let printJobByOrderId = new Map();
+      let activePrintRequestCount = 0;
+      let nextPrintSequence = 1;
+      let printWorkerPausedReason = '';
+      let printBatchMaxQueueDepth = 0;
+      let printBatchStartedAt = null;
+      let printBatchLastAcceptedAt = null;
+      let printBatchSettledAt = null;
+      let resumeContext = null;
+      let scanFeedbackToken = 0;
+
+      function nowMs() {
+        return performance.now();
+      }
+
+      function formatMs(value) {
+        return Number.isFinite(value) ? `${Math.round(value)}ms` : '—';
+      }
+
+      function waitForNextPaint() {
+        return new Promise(resolve => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve(nowMs())));
+        });
+      }
+
+      function cameraSettingsSnapshot() {
+        if (!stream) return {};
+        const track = stream.getVideoTracks()[0];
+        if (!track || typeof track.getSettings !== 'function') return {};
+        const settings = track.getSettings();
+        return {
+          width: settings.width || 0,
+          height: settings.height || 0,
+          frameRate: settings.frameRate || 0,
+          facingMode: settings.facingMode || '',
+          aspectRatio: settings.aspectRatio || 0
+        };
+      }
+
+      function cameraPerformanceSnapshot() {
+        if (!cameraPerformance) return null;
+        return {
+          getUserMediaMs: cameraPerformance.getUserMediaMs,
+          videoPlayMs: cameraPerformance.videoPlayMs,
+          detectorInitMs: cameraPerformance.detectorInitMs,
+          cameraReadyMs: cameraPerformance.cameraReadyMs,
+          firstScanEligibleMs: cameraPerformance.firstScanEligibleMs,
+          barcodeDetectorApiAvailable: cameraPerformance.barcodeDetectorApiAvailable,
+          barcodeDetectorQrSupported: cameraPerformance.barcodeDetectorQrSupported,
+          barcodeDetectorSupportedFormats: [...(cameraPerformance.barcodeDetectorSupportedFormats || [])],
+          zxingAvailable: cameraPerformance.zxingAvailable,
+          zxingInitError: cameraPerformance.zxingInitError || '',
+          scanScheduler: cameraPerformance.scanScheduler,
+          userAgent: cameraPerformance.userAgent,
+          platform: cameraPerformance.platform,
+          settings: { ...(cameraPerformance.settings || {}) }
+        };
+      }
+
+      function beginScanCycle() {
+        activeScanPerformance = {
+          startedAt: nowMs(),
+          attemptCount: 0,
+          decodeTotalMs: 0,
+          decodeMaxMs: 0,
+          decodeLastMs: 0,
+          intervalCount: 0,
+          intervalTotalMs: 0,
+          intervalMaxMs: 0,
+          lastAttemptStartedAt: null,
+          decoderCounts: {},
+          sourceWidth: video.videoWidth || 0,
+          sourceHeight: video.videoHeight || 0,
+          sourceSide: 0,
+          canvasSide: 0,
+          detectedAt: null,
+          detectWaitMs: null,
+          feedbackPaintMs: null
+        };
+      }
+
+      function recordScanAttempt(startedAt, durationMs, result) {
+        if (!activeScanPerformance) beginScanCycle();
+        const metrics = activeScanPerformance;
+        if (metrics.lastAttemptStartedAt !== null) {
+          const intervalMs = startedAt - metrics.lastAttemptStartedAt;
+          metrics.intervalCount += 1;
+          metrics.intervalTotalMs += intervalMs;
+          metrics.intervalMaxMs = Math.max(metrics.intervalMaxMs, intervalMs);
+        }
+        metrics.lastAttemptStartedAt = startedAt;
+        metrics.attemptCount += 1;
+        metrics.decodeTotalMs += durationMs;
+        metrics.decodeMaxMs = Math.max(metrics.decodeMaxMs, durationMs);
+        metrics.decodeLastMs = durationMs;
+        metrics.sourceWidth = video.videoWidth || metrics.sourceWidth;
+        metrics.sourceHeight = video.videoHeight || metrics.sourceHeight;
+        metrics.sourceSide = result.sourceSide || metrics.sourceSide;
+        metrics.canvasSide = result.canvasSide || metrics.canvasSide;
+        const path = result.decoderPath || 'unknown';
+        metrics.decoderCounts[path] = (metrics.decoderCounts[path] || 0) + 1;
+      }
+
+      function summarizeScanPerformance(metrics) {
+        if (!metrics) return null;
+        return {
+          attemptCount: metrics.attemptCount,
+          decodeAverageMs: metrics.attemptCount ? metrics.decodeTotalMs / metrics.attemptCount : 0,
+          decodeMaxMs: metrics.decodeMaxMs,
+          decodeLastMs: metrics.decodeLastMs,
+          intervalAverageMs: metrics.intervalCount ? metrics.intervalTotalMs / metrics.intervalCount : 0,
+          intervalMaxMs: metrics.intervalMaxMs,
+          detectWaitMs: metrics.detectWaitMs,
+          feedbackPaintMs: metrics.feedbackPaintMs,
+          decoderCounts: { ...metrics.decoderCounts },
+          sourceWidth: metrics.sourceWidth,
+          sourceHeight: metrics.sourceHeight,
+          sourceSide: metrics.sourceSide,
+          canvasSide: metrics.canvasSide
+        };
+      }
+
+      function renderPerformancePanel() {
+        perfPanel.hidden = !debugPerformanceEnabled;
+        if (!debugPerformanceEnabled) return;
+        if (!performanceHistory.length) {
+          perfOutput.textContent = '計測待機中\nQRを読み取ると結果を表示します。';
+          return;
+        }
+
+        const result = performanceHistory[0];
+        const scan = result.scan || {};
+        const api = result.api || {};
+        const camera = result.camera || {};
+        const settings = camera.settings || {};
+        const batchScanDurationMs = Number.isFinite(printBatchStartedAt) && Number.isFinite(printBatchLastAcceptedAt)
+          ? printBatchLastAcceptedAt - printBatchStartedAt
+          : null;
+        const batchSettledMs = Number.isFinite(printBatchStartedAt) && Number.isFinite(printBatchSettledAt)
+          ? printBatchSettledAt - printBatchStartedAt
+          : null;
+        const decoderPaths = Object.entries(scan.decoderCounts || {}).map(([name, count]) => `${name}:${count}`).join(', ') || '—';
+        const lines = [
+          `#${result.sequence} ${result.action} / ${result.outcome}`,
+          `検出待ち: ${formatMs(scan.detectWaitMs)}`,
+          `デコード: ${decoderPaths} / ${scan.attemptCount || 0}回 / 平均${formatMs(scan.decodeAverageMs)} / 最大${formatMs(scan.decodeMaxMs)} / 最終${formatMs(scan.decodeLastMs)}`,
+          `試行間隔: 平均${formatMs(scan.intervalAverageMs)} / 最大${formatMs(scan.intervalMaxMs)}`,
+          `即時表示: ${formatMs(scan.feedbackPaintMs)}`,
+          `往復: ${formatMs(api.fetchRttMs)}（header ${formatMs(api.headersMs)} / body ${formatMs(api.bodyDownloadMs)}）`,
+          `サーバー内部: ${formatMs(api.serverTotalMs)}`,
+          `通信・起動等: ${formatMs(api.transportOverheadMs)}`,
+          `キュー: 待ち ${formatMs(api.queueWaitMs)} / 受付時 ${Number.isFinite(api.queueDepthAtEnqueue) ? api.queueDepthAtEnqueue : '—'} / 開始時 ${Number.isFinite(api.queueDepthAtRequestStart) ? api.queueDepthAtRequestStart : '—'} / 最大 ${Number.isFinite(api.maxQueueDepth) ? api.maxQueueDepth : '—'}`,
+          `受付→結果: ${formatMs(api.scanToResultMs)} / バッチ受付操作: ${formatMs(batchScanDurationMs)} / 全処理: ${formatMs(batchSettledMs)}`,
+          `JSON+描画: ${formatMs(result.jsonAndRenderMs)}`,
+          `全体: ${formatMs(result.totalMs)}`,
+          `ページ経過: ${formatMs(api.pageAgeMs)} / 前回完了から: ${formatMs(api.previousRequestGapMs)}`,
+          `redirect: ${api.redirected ? 'yes' : 'no'} / final: ${api.finalHost || '—'}`,
+          `応答: HTTP ${Number.isFinite(api.responseStatus) ? api.responseStatus : '—'} / ${api.responseContentType || 'type不明'} / ${Number.isFinite(api.responseTextLength) ? `${api.responseTextLength}文字` : '長さ—'}`,
+          `trace: rid ${api.logicalRequestId || '—'} / ta ${Number.isFinite(api.transportAttempt) ? api.transportAttempt : '—'}`,
+          `カメラ: getUserMedia ${formatMs(camera.getUserMediaMs)} / play ${formatMs(camera.videoPlayMs)} / detector ${formatMs(camera.detectorInitMs)} / ready ${formatMs(camera.cameraReadyMs)} / 初回試行可能 ${formatMs(camera.firstScanEligibleMs)}`,
+          `映像: ${settings.width || scan.sourceWidth || 0}x${settings.height || scan.sourceHeight || 0} @${settings.frameRate || '—'}fps → ROI ${scan.sourceSide || 0}px → canvas ${scan.canvasSide || 0}px`,
+          `試行方式: ${camera.scanScheduler || '—'}`,
+          `BarcodeDetector: API ${camera.barcodeDetectorApiAvailable ? 'yes' : 'no'} / QR ${camera.barcodeDetectorQrSupported ? 'yes' : 'no'} / formats ${(camera.barcodeDetectorSupportedFormats || []).join(', ') || '—'}`,
+          `ZXing: ${camera.zxingAvailable ? 'loaded' : 'unavailable'}${camera.zxingInitError ? ` / ${camera.zxingInitError}` : ''}`,
+          `端末: ${camera.platform || '—'} / ${camera.userAgent || '—'}`
+        ];
+        if (api.badResponseKind) {
+          lines.push(`不正応答: ${api.badResponseKind}`);
+          lines.push(`本文先頭: ${api.responsePreviewOmitted ? '（個人情報保護のため非表示）' : (api.responsePreview || '（取得なし）')}`);
+        }
+
+        const marks = result.serverMarks || [];
+        if (marks.length) {
+          lines.push('--- server marks ---');
+          let previousAt = 0;
+          marks.forEach(mark => {
+            const at = Number(mark.at) || 0;
+            lines.push(`${mark.label}: +${Math.max(0, at - previousAt)}ms (${at}ms)`);
+            previousAt = at;
+          });
+        }
+
+        if (performanceHistory.length > 1) {
+          lines.push('--- 直近3回 ---');
+          performanceHistory.forEach(item => {
+            lines.push(`#${item.sequence} 検出${formatMs(item.scan && item.scan.detectWaitMs)} / 往復${formatMs(item.api && item.api.fetchRttMs)} / server${formatMs(item.api && item.api.serverTotalMs)} / 全体${formatMs(item.totalMs)}`);
+          });
+        }
+        perfOutput.textContent = lines.join('\n');
+      }
+
+      function setScanFeedback(active, message) {
+        scanFrameElement.classList.toggle('detected', active);
+        if (active && message) document.getElementById('scan-feedback').textContent = message;
+        const completion = currentMode === 'shipping-complete';
+        document.getElementById('camera-subtitle').textContent = active
+          ? (message || 'QR読取済み・照会中…')
+          : (completion ? (completionStep === 'orders' ? '注文書QRを読み取ってください' : '実物伝票を読み取ってください') : (currentMode === 'shipping' ? 'QRを順番にスキャンしてください' : 'QRをかざしてください'));
+      }
+
+      function summarizeBadResponse(responseText, action) {
+        const text = String(responseText || '');
+        let kind = 'non_json';
+        if (!text.length) kind = 'empty';
+        else if (text.includes('このURLはAPI専用です')) kind = 'api_only_do_get_text';
+        else if (/^\s*</.test(text)) kind = 'html';
+        const previewAllowed = action === 'print' || kind === 'api_only_do_get_text' || kind === 'empty' || kind === 'html';
+        const preview = previewAllowed ? text.slice(0, 200).replace(/[\r\n\t]+/g, ' ').trim() : '';
+        return {
+          kind,
+          preview: previewAllowed ? (preview || '（空文字列）') : '',
+          previewOmitted: !previewAllowed,
+          length: text.length
+        };
+      }
+
+      function createLogicalRequestId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+          return `print-${window.crypto.randomUUID()}`;
+        }
+        const randomPart = Math.random().toString(36).slice(2, 12);
+        return `print-${Date.now().toString(36)}-${nextPrintSequence.toString(36)}-${randomPart}`;
+      }
+
+      async function fetchJsonWithPerformance(action, body, scanMetrics, options = {}) {
+        const measurement = {
+          action,
+          logicalRequestId: options.logicalRequestId || '',
+          transportAttempt: Number.isFinite(options.transportAttempt) ? options.transportAttempt : null,
+          scanMetrics,
+          camera: cameraPerformanceSnapshot(),
+          fetchStartedAt: nowMs(),
+          pageAgeMs: nowMs() - PAGE_STARTED_AT,
+          previousRequestGapMs: lastRequestCompletedAt === null ? null : nowMs() - lastRequestCompletedAt,
+          headersMs: null,
+          bodyDownloadMs: null,
+          fetchRttMs: null,
+          jsonParseMs: null,
+          jsonReadyAt: null,
+          redirected: false,
+          finalHost: '',
+          responseStatus: null,
+          responseContentType: '',
+          responseTextLength: null,
+          responsePreview: '',
+          responsePreviewOmitted: false,
+          badResponseKind: '',
+          serverTotalMs: null,
+          transportOverheadMs: null,
+          serverMarks: []
+        };
+
+        try {
+          const response = await fetch(options.url || GAS_URL, { method: 'POST', body });
+          const headersAt = nowMs();
+          measurement.headersMs = headersAt - measurement.fetchStartedAt;
+          measurement.redirected = response.redirected;
+          measurement.responseStatus = response.status;
+          measurement.responseContentType = response.headers && typeof response.headers.get === 'function'
+            ? (response.headers.get('content-type') || '')
+            : '';
+          try { measurement.finalHost = new URL(response.url).host; } catch (error) { measurement.finalHost = ''; }
+          const responseText = await response.text();
+          const bodyAt = nowMs();
+          measurement.bodyDownloadMs = bodyAt - headersAt;
+          measurement.fetchRttMs = bodyAt - measurement.fetchStartedAt;
+          const jsonStartedAt = nowMs();
+          let data;
+          try {
+            data = JSON.parse(responseText);
+            measurement.jsonReadyAt = nowMs();
+            measurement.jsonParseMs = measurement.jsonReadyAt - jsonStartedAt;
+          } catch (parseError) {
+            measurement.jsonReadyAt = nowMs();
+            measurement.jsonParseMs = measurement.jsonReadyAt - jsonStartedAt;
+            const badResponse = summarizeBadResponse(responseText, action);
+            measurement.responseTextLength = badResponse.length;
+            measurement.responsePreview = badResponse.preview;
+            measurement.responsePreviewOmitted = badResponse.previewOmitted;
+            measurement.badResponseKind = badResponse.kind;
+            parseError.failureCode = 'BAD_RESPONSE';
+            throw parseError;
+          }
+          if (data && data._perf) {
+            measurement.serverTotalMs = Number(data._perf.total_ms);
+            measurement.serverMarks = Array.isArray(data._perf.marks) ? data._perf.marks : [];
+            if (Number.isFinite(measurement.serverTotalMs)) {
+              measurement.transportOverheadMs = Math.max(0, measurement.fetchRttMs - measurement.serverTotalMs);
+            }
+          }
+          return { data, measurement };
+        } catch (error) {
+          const failedAt = nowMs();
+          if (!Number.isFinite(measurement.fetchRttMs)) measurement.fetchRttMs = failedAt - measurement.fetchStartedAt;
+          if (!Number.isFinite(measurement.jsonReadyAt)) measurement.jsonReadyAt = failedAt;
+          error.performanceMeasurement = measurement;
+          throw error;
+        }
+      }
+
+      function finishRequestPerformance(measurement, outcome) {
+        if (!measurement) return;
+        waitForNextPaint().then(paintedAt => {
+          const jsonAndRenderMs = measurement.jsonReadyAt ? paintedAt - measurement.jsonReadyAt + (measurement.jsonParseMs || 0) : null;
+          const scanStartedAt = measurement.scanMetrics && measurement.scanMetrics.startedAt;
+          const totalStartedAt = Number.isFinite(scanStartedAt) ? scanStartedAt : measurement.fetchStartedAt;
+          const result = {
+            sequence: ++performanceSequence,
+            action: measurement.action,
+            outcome,
+            camera: measurement.camera,
+            scan: summarizeScanPerformance(measurement.scanMetrics),
+            api: {
+              headersMs: measurement.headersMs,
+              bodyDownloadMs: measurement.bodyDownloadMs,
+              fetchRttMs: measurement.fetchRttMs,
+              redirected: measurement.redirected,
+              finalHost: measurement.finalHost,
+              responseStatus: measurement.responseStatus,
+              responseContentType: measurement.responseContentType,
+              responseTextLength: measurement.responseTextLength,
+              responsePreview: measurement.responsePreview,
+              responsePreviewOmitted: measurement.responsePreviewOmitted,
+              badResponseKind: measurement.badResponseKind,
+              logicalRequestId: measurement.logicalRequestId,
+              transportAttempt: measurement.transportAttempt,
+              serverTotalMs: measurement.serverTotalMs,
+              transportOverheadMs: measurement.transportOverheadMs,
+              pageAgeMs: measurement.pageAgeMs,
+              previousRequestGapMs: measurement.previousRequestGapMs,
+              queueWaitMs: measurement.queueWaitMs,
+              queueDepthAtEnqueue: measurement.queueDepthAtEnqueue,
+              queueDepthAtRequestStart: measurement.queueDepthAtRequestStart,
+              maxQueueDepth: measurement.maxQueueDepth,
+              scanToResultMs: measurement.scanToResultMs
+            },
+            serverMarks: measurement.serverMarks,
+            jsonAndRenderMs,
+            totalMs: Number.isFinite(totalStartedAt) ? paintedAt - totalStartedAt : null
+          };
+          performanceHistory.unshift(result);
+          performanceHistory = performanceHistory.slice(0, 3);
+          lastRequestCompletedAt = paintedAt;
+          renderPerformancePanel();
+        });
+      }
+
+      function resetPrintBatch() {
+        printJobs = [];
+        printJobByOrderId = new Map();
+        activePrintRequestCount = 0;
+        nextPrintSequence = 1;
+        printWorkerPausedReason = '';
+        printBatchMaxQueueDepth = 0;
+        printBatchStartedAt = null;
+        printBatchLastAcceptedAt = null;
+        printBatchSettledAt = null;
+        if (resumeContext && resumeContext.mode === 'print') resumeContext = null;
+        renderPrintQueue();
+      }
+
+      function getPrintJobCounts() {
+        const counts = { accepted: printJobs.length, completed: 0, queued: 0, requesting: 0, error: 0 };
+        printJobs.forEach(job => {
+          if (job.state === 'success' || job.state === 'already_tagged') counts.completed += 1;
+          else if (job.state === 'queued') counts.queued += 1;
+          else if (job.state === 'requesting') counts.requesting += 1;
+          else if (job.state === 'error') counts.error += 1;
+        });
+        return counts;
+      }
+
+      function renderPrintQueue() {
+        const summary = document.getElementById('print-summary');
+        const complete = document.getElementById('print-complete');
+        const errors = document.getElementById('print-errors');
+        if (!summary || !complete || !errors) return;
+        const counts = getPrintJobCounts();
+        if (counts.accepted > 0 && counts.queued === 0 && counts.requesting === 0 && !printWorkerPausedReason) {
+          if (!Number.isFinite(printBatchSettledAt)) printBatchSettledAt = nowMs();
+        } else {
+          printBatchSettledAt = null;
+        }
+        summary.innerHTML = `受付 <strong>${counts.accepted}</strong> / 完了 ${counts.completed} / 待ち ${counts.queued} / 処理中 ${counts.requesting} / エラー ${counts.error}`;
+        complete.textContent = counts.accepted > 0 && counts.completed === counts.accepted
+          ? `${counts.accepted}件の確認が完了しました。`
+          : (printWorkerPausedReason === 'auth' ? '再認証後に処理を再開します。' : '');
+        errors.textContent = '';
+        printJobs.filter(job => job.state === 'error').forEach(job => {
+          const row = document.createElement('div');
+          row.className = 'print-error-row';
+          const message = document.createElement('span');
+          message.className = 'print-error-text';
+          message.textContent = `${job.order_id}: ${job.error_message || '処理に失敗しました'}`;
+          message.title = message.textContent;
+          const retry = document.createElement('button');
+          retry.className = 'print-error-action';
+          retry.type = 'button';
+          retry.textContent = '再試行';
+          retry.addEventListener('click', () => retryPrintJob(job.id));
+          const remove = document.createElement('button');
+          remove.className = 'print-error-action';
+          remove.type = 'button';
+          remove.textContent = '削除';
+          remove.addEventListener('click', () => removePrintJob(job.id));
+          row.append(message, retry, remove);
+          errors.appendChild(row);
+        });
+      }
+
+      function removePrintJob(jobId) {
+        const index = printJobs.findIndex(job => job.id === jobId);
+        if (index < 0 || printJobs[index].state !== 'error') return;
+        printJobByOrderId.delete(printJobs[index].order_id);
+        printJobs.splice(index, 1);
+        renderPrintQueue();
+      }
+
+      function retryPrintJob(jobId) {
+        const job = printJobs.find(item => item.id === jobId);
+        if (!job || job.state !== 'error' || printWorkerPausedReason) return;
+        job.state = 'queued';
+        job.queued_at = nowMs();
+        job.completed_at = null;
+        job.error_code = '';
+        job.error_message = '';
+        renderPrintQueue();
+        pumpPrintQueue();
+      }
+
+      function enqueuePrintJob(orderId, scanMetrics) {
+        const queuedAt = nowMs();
+        const job = {
+          id: nextPrintSequence,
+          sequence: nextPrintSequence,
+          order_id: orderId,
+          state: 'queued',
+          attempts: 0,
+          created_at: queuedAt,
+          queued_at: queuedAt,
+          request_started_at: null,
+          completed_at: null,
+          scan_metrics: scanMetrics,
+          data: null,
+          error_code: '',
+          error_message: '',
+          logical_request_id: createLogicalRequestId(),
+          transport_attempt: 0,
+          queue_depth_at_enqueue: 0
+        };
+        nextPrintSequence += 1;
+        printJobs.push(job);
+        printJobByOrderId.set(orderId, job);
+        if (!Number.isFinite(printBatchStartedAt)) printBatchStartedAt = queuedAt;
+        printBatchLastAcceptedAt = queuedAt;
+        printBatchSettledAt = null;
+        job.queue_depth_at_enqueue = printJobs.filter(item => item.state === 'queued' || item.state === 'requesting').length;
+        printBatchMaxQueueDepth = Math.max(printBatchMaxQueueDepth, job.queue_depth_at_enqueue);
+        renderPrintQueue();
+        return job;
+      }
+
+      function pausePrintQueueForAuth(job, data) {
+        job.state = 'queued';
+        job.queued_at = nowMs();
+        printWorkerPausedReason = 'auth';
+        resumeContext = { mode: 'print' };
+        renderPrintQueue();
+        if (data.error_code === 'FORBIDDEN') showForbidden();
+        else showSignIn('サインインの有効期限が切れました。もう一度サインインしてください。');
+      }
+
+      async function processPrintJob(job) {
+        let measurement = null;
+        try {
+          job.transport_attempt += 1;
+          const transportAttempt = job.transport_attempt;
+          const logicalRequestId = job.logical_request_id;
+          const requestUrl = new URL(GAS_URL);
+          requestUrl.searchParams.set('rid', logicalRequestId);
+          requestUrl.searchParams.set('ta', String(transportAttempt));
+          const body = new URLSearchParams({
+            payload: JSON.stringify({
+              action: 'print',
+              order_id: job.order_id,
+              id_token: idToken,
+              logical_request_id: logicalRequestId,
+              transport_attempt: transportAttempt
+            })
+          });
+          const scanMetrics = job.attempts === 1 ? job.scan_metrics : null;
+          const result = await fetchJsonWithPerformance('print', body, scanMetrics, {
+            url: requestUrl.toString(),
+            logicalRequestId,
+            transportAttempt
+          });
+          const data = result.data;
+          measurement = result.measurement;
+          measurement.queueWaitMs = job.request_started_at - job.queued_at;
+          measurement.queueDepthAtEnqueue = job.queue_depth_at_enqueue;
+          measurement.queueDepthAtRequestStart = printJobs.filter(item => item.state === 'queued' || item.state === 'requesting').length;
+          measurement.maxQueueDepth = printBatchMaxQueueDepth;
+
+          if (data.error_code === 'TOKEN_MISSING' || data.error_code === 'TOKEN_INVALID' || data.error_code === 'FORBIDDEN') {
+            pausePrintQueueForAuth(job, data);
+            finishRequestPerformance(measurement, 'auth_error');
+            return;
+          }
+          if (!data.ok) {
+            job.state = 'error';
+            job.error_code = data.error_code || 'API_ERROR';
+            job.error_message = data.error || '処理に失敗しました。';
+            job.completed_at = nowMs();
+            measurement.scanToResultMs = job.completed_at - job.created_at;
+            renderPrintQueue();
+            showToast(`${job.order_id}: ${job.error_message}`, 'error');
+            finishRequestPerformance(measurement, 'api_error');
+            return;
+          }
+
+          job.data = data;
+          job.state = data.already_tagged ? 'already_tagged' : 'success';
+          job.completed_at = nowMs();
+          measurement.scanToResultMs = job.completed_at - job.created_at;
+          renderPrintQueue();
+          finishRequestPerformance(measurement, job.state);
+        } catch (error) {
+          measurement = error.performanceMeasurement || measurement;
+          if (measurement) {
+            measurement.queueWaitMs = job.request_started_at - job.queued_at;
+            measurement.queueDepthAtEnqueue = job.queue_depth_at_enqueue;
+            measurement.queueDepthAtRequestStart = printJobs.filter(item => item.state === 'queued' || item.state === 'requesting').length;
+            measurement.maxQueueDepth = printBatchMaxQueueDepth;
+          }
+          const badResponse = error.failureCode === 'BAD_RESPONSE';
+          job.state = 'error';
+          job.error_code = badResponse ? 'BAD_RESPONSE' : 'NETWORK_ERROR';
+          job.error_message = badResponse
+            ? 'サーバー応答を確認できませんでした。再試行してください。'
+            : '通信に失敗しました。';
+          job.completed_at = nowMs();
+          if (measurement) measurement.scanToResultMs = job.completed_at - job.created_at;
+          renderPrintQueue();
+          showToast(`${job.order_id}: ${job.error_message}`, 'error');
+          finishRequestPerformance(measurement, badResponse ? 'bad_response' : 'network_error');
+        }
+      }
+
+      function pumpPrintQueue() {
+        if (currentMode !== 'print' || printWorkerPausedReason || activePrintRequestCount >= MAX_PRINT_REQUESTS) return;
+        const job = printJobs.find(item => item.state === 'queued');
+        if (!job) { renderPrintQueue(); return; }
+        job.state = 'requesting';
+        job.attempts += 1;
+        job.request_started_at = nowMs();
+        activePrintRequestCount += 1;
+        renderPrintQueue();
+        processPrintJob(job).finally(() => {
+          activePrintRequestCount = Math.max(0, activePrintRequestCount - 1);
+          renderPrintQueue();
+          pumpPrintQueue();
+        });
+      }
+
+      function resumeAuthenticatedBatch() {
+        const context = resumeContext;
+        if (!context || context.mode !== 'print' || !printJobs.length) {
+          resumeContext = null;
+          showModeSelect();
+          return;
+        }
+        resumeContext = null;
+        printWorkerPausedReason = '';
+        currentMode = 'print';
+        updateCameraMode();
+        startCamera().then(() => {
+          pumpPrintQueue();
+          maybeShowInstallHint();
+        });
+      }
+
+      window.handleSignIn = function(response) {
+        if (!response || !response.credential) {
+          showSignIn('サインインに失敗しました。もう一度お試しください。');
+          return;
+        }
+        idToken = response.credential;
+        if (resumeContext) resumeAuthenticatedBatch();
+        else showModeSelect();
+      };
+
+      function showScreen(id) {
+        if (screenTransitionUnlockTimer !== null) {
+          clearTimeout(screenTransitionUnlockTimer);
+          screenTransitionUnlockTimer = null;
+        }
+        document.querySelectorAll('.screen').forEach(screen => {
+          screen.classList.remove('active');
+          screen.classList.remove('screen-transition-locked');
+        });
+        const nextScreen = document.getElementById(id);
+        nextScreen.classList.add('active');
+        nextScreen.classList.add('screen-transition-locked');
+        screenTransitionUnlockTimer = setTimeout(() => {
+          nextScreen.classList.remove('screen-transition-locked');
+          screenTransitionUnlockTimer = null;
+        }, SCREEN_TRANSITION_LOCK_MS);
+      }
+
+      function showLoading(message) {
+        document.getElementById('loading-message').textContent = message || '処理しています…';
+        showScreen('loading-screen');
+      }
+
+      function showToast(message, type) {
+        toast.textContent = message || '処理に失敗しました';
+        toast.className = 'show ' + (type || '');
+        if (toast.style) {
+          const activePanel = currentMode === 'shipping' ? document.getElementById('ship-controls')
+            : currentMode === 'print' ? document.getElementById('print-controls')
+            : null;
+          const rect = activePanel && typeof activePanel.getBoundingClientRect === 'function'
+            ? activePanel.getBoundingClientRect() : null;
+          const panelVisible = Boolean(activePanel && !activePanel.hidden && rect && rect.width > 0 && rect.height > 0);
+          if (panelVisible) {
+            const viewportHeight = typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : document.documentElement.clientHeight;
+            toast.style.bottom = `${Math.max(0, Math.round(viewportHeight - rect.top + 12))}px`;
+          } else {
+            toast.style.bottom = '';
+          }
+        }
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { toast.className = ''; }, 3200);
+      }
+
+      function stopCamera() {
+        scanning = false;
+        requestInFlight = false;
+        scanGeneration += 1;
+        setScanFeedback(false);
+        cancelScheduledScan();
+        decodeInFlight = false;
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+          stream = null;
+        }
+        video.srcObject = null;
+        canvasSide = 0;
+        activeScanPerformance = null;
+      }
+
+      function showSignIn(message) {
+        stopCamera();
+        requestInFlight = false;
+        idToken = '';
+        document.getElementById('signin-message').textContent = message || 'Googleアカウントでサインインしてください。';
+        showScreen('signin-screen');
+      }
+
+      function showForbidden() {
+        stopCamera();
+        requestInFlight = false;
+        idToken = '';
+        document.getElementById('forbidden-message').textContent = 'このアカウントは許可リストに登録されていません。許可された別のGoogleアカウントでサインインしてください。';
+        showScreen('forbidden-screen');
+      }
+
+      function showModeSelect() {
+        stopCamera();
+        currentMode = '';
+        completionConsolidation = '';
+        completionStep = '';
+        showScreen('mode-screen');
+      }
+
+      function updateCameraMode() {
+        const shipping = currentMode === 'shipping';
+        const printing = currentMode === 'print';
+        const completion = currentMode === 'shipping-complete';
+        document.getElementById('camera-title').textContent = completion ? '発送完了' : (shipping ? '発送準備' : '印刷モード');
+        document.getElementById('camera-subtitle').textContent = completion
+          ? (completionStep === 'orders' ? '注文書QRを読み取ってください' : '実物伝票を読み取ってください')
+          : (shipping ? 'QRを順番にスキャンしてください' : 'QRをかざしてください');
+        document.getElementById('camera-hint').textContent = completion
+          ? (completionStep === 'orders' ? '注文書QRを読み取ります' : '伝票のQRまたはバーコードを読み取ります')
+          : (shipping ? 'スキャンすると一覧に追加されます' : 'スキャンすると自動で印刷タグを付けます');
+        document.getElementById('print-controls').hidden = !printing;
+        document.getElementById('ship-controls').hidden = !shipping;
+        document.getElementById('completion-controls').hidden = !completion;
+        document.getElementById('manual-scan-controls').hidden = !(printing || shipping || completion);
+        if (printing) renderPrintQueue();
+        if (shipping) {
+          document.getElementById('carrier-label').textContent = '発送準備';
+          renderShippingList();
+        }
+        if (completion) renderCompletionControls_();
+      }
+
+      function startPrintMode() {
+        currentMode = 'print';
+        resetPrintBatch();
+        updateCameraMode();
+        startCamera().then(maybeShowInstallHint);
+      }
+
+      function showCarrierSelect() {
+        stopCamera();
+        showScreen('carrier-screen');
+      }
+
+      function showCompletionModeSelect() {
+        stopCamera();
+        currentMode = '';
+        showScreen('completion-mode-screen');
+      }
+
+      function startCompletionMode(consolidation) {
+        currentMode = 'shipping-complete';
+        completionConsolidation = consolidation;
+        completionStep = 'orders';
+        completionOrders = [];
+        completionRawTrackingValue = '';
+        completionLabelValues = [];
+        completionSessionShipmentId = '';
+        completionExpectedOrderCount = 0;
+        completionPendingOrderId = '';
+        completionConfirmedTracking = '';
+        completionPlanId = '';
+        completionNotify = null;
+        completionCardsMissing = [];
+        updateCameraMode();
+        startCamera().then(maybeShowInstallHint);
+      }
+
+      async function startShippingMode() {
+        currentMode = 'shipping';
+        shippingItems = [];
+        shippingContext = null;
+        pendingFinalize = null;
+        pendingIssueData = null;
+        finalizeInFlight = false;
+        resetRepresentativeDestinationState_();
+        finalizeRequestId = createRequestId('fin');
+        finalizeTransportAttempt = 0;
+        updateCameraMode();
+        showLoading('発送準備の情報を取得しています…');
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'ship_prep_context', id_token: idToken }) });
+          const result = await fetchJsonWithPerformance('ship_prep_context', body, null);
+          const data = result.data;
+          if (handleAuthError(data)) return;
+          if (!data.ok) throw new Error(data.error || '発送準備の営業日情報を取得できませんでした。');
+          shippingContext = data;
+          serverEpochAtSync = Date.parse(data.server_now);
+          performanceNowAtSync = performance.now();
+          if (!Number.isFinite(serverEpochAtSync)) throw new Error('サーバー時刻を確認できませんでした。');
+          populateTeamDestinations(Array.isArray(data.team_destinations) ? data.team_destinations : []);
+          await startCamera();
+          maybeShowInstallHint();
+        } catch (error) {
+          showError(error.message || '発送準備の営業日情報を取得できませんでした。');
+        }
+      }
+
+      function createRequestId(prefix) {
+        const suffix = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        return `${prefix}-${suffix}`;
+      }
+
+      function adjustedIsoNow() {
+        const epoch = Number.isFinite(serverEpochAtSync) && Number.isFinite(performanceNowAtSync)
+          ? serverEpochAtSync + (performance.now() - performanceNowAtSync)
+          : Date.now();
+        return new Date(epoch).toISOString();
+      }
+
+      function initializeGoogleSignIn(attempt = 0) {
+        if (!window.google || !google.accounts || !google.accounts.id) {
+          if (attempt < 40) setTimeout(() => initializeGoogleSignIn(attempt + 1), 250);
+          return;
+        }
+        google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: window.handleSignIn,
+          auto_select: true
+        });
+        google.accounts.id.renderButton(document.getElementById('g_id_signin'), {
+          type: 'standard',
+          size: 'large',
+          theme: 'filled_blue'
+        });
+        google.accounts.id.prompt();
+      }
+
+      function maybeShowInstallHint() {
+        const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+        if (isStandalone || !document.getElementById('camera-screen').classList.contains('active')) return;
+        try {
+          if (localStorage.getItem('addToHomeScreenSeen') === '1') return;
+          localStorage.setItem('addToHomeScreenSeen', '1');
+        } catch (error) {
+          return;
+        }
+        document.getElementById('install-hint').classList.add('show');
+      }
+
+      function returnToCamera() {
+        requestInFlight = false;
+        setScanFeedback(false);
+        cancelScheduledScan();
+        scanGeneration += 1;
+        // scanGeneration を進めたら decodeInFlight も必ず戻す（stopCamera_ と同じ作法）。
+        // scanFrame() の finally は generation が一致するときしか decodeInFlight を
+        // false に戻さないため、ここで進めたぶんだけ「デコード中のまま」で固まりうる。
+        // そうなると以後 scanFrame() が毎回先頭で return し、スキャンが永久に再開しない。
+        decodeInFlight = false;
+        scanning = true;
+        showScreen('camera-screen');
+        beginScanCycle();
+        scheduleScan();
+      }
+
+      function showError(message) {
+        scanning = false;
+        document.getElementById('error-message').textContent = message || '予期しないエラーが発生しました。';
+        showScreen('error-screen');
+      }
+
+      async function startCamera() {
+        showLoading('カメラを準備しています…');
+        try {
+          stopCamera();
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('このブラウザではカメラを利用できません。');
+          const cameraStartedAt = nowMs();
+          cameraPerformance = {
+            startedAt: cameraStartedAt,
+            getUserMediaMs: null,
+            videoPlayMs: null,
+            detectorInitMs: null,
+            cameraReadyMs: null,
+            firstScanEligibleMs: null,
+            barcodeDetectorApiAvailable: 'BarcodeDetector' in window,
+            barcodeDetectorQrSupported: false,
+            scanScheduler: typeof video.requestVideoFrameCallback === 'function' ? 'requestVideoFrameCallback' : `setTimeout(${SCAN_INTERVAL_MS}ms)`,
+            userAgent: navigator.userAgent || '',
+            platform: navigator.platform || '',
+            barcodeDetectorSupportedFormats: [],
+            zxingAvailable: false,
+            zxingInitError: '',
+            settings: {}
+          };
+          const mediaStartedAt = nowMs();
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { ideal: 'environment' },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+              frameRate: { ideal: 30 }
+            },
+            audio: false
+          });
+          cameraPerformance.getUserMediaMs = nowMs() - mediaStartedAt;
+          video.srcObject = stream;
+          const playStartedAt = nowMs();
+          await video.play();
+          cameraPerformance.videoPlayMs = nowMs() - playStartedAt;
+          await initializeBarcodeDetector();
+          cameraPerformance.settings = cameraSettingsSnapshot();
+          cameraPerformance.cameraReadyMs = nowMs() - cameraStartedAt;
+          scanning = true;
+          showScreen('camera-screen');
+          beginScanCycle();
+          renderPerformancePanel();
+          scheduleScan();
+        } catch (error) {
+          showError('カメラを起動できませんでした。\nブラウザのカメラ権限を許可して再試行してください。');
+        }
+      }
+
+      async function initializeBarcodeDetector() {
+        const detectorStartedAt = nowMs();
+        barcodeDetector = null;
+        barcodeDetectorSupportedFormats = [];
+        const profile = scanProfile_();
+        if (!('BarcodeDetector' in window)) {
+          if (cameraPerformance) cameraPerformance.detectorInitMs = nowMs() - detectorStartedAt;
+          await initializeZxingReader_(profile);
+          return;
+        }
+        try {
+          const formats = await window.BarcodeDetector.getSupportedFormats();
+          barcodeDetectorSupportedFormats = Array.isArray(formats) ? formats : [];
+          if (cameraPerformance) cameraPerformance.barcodeDetectorSupportedFormats = [...barcodeDetectorSupportedFormats];
+          if (profile === 'qr' && formats.includes('qr_code')) {
+            barcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
+            if (cameraPerformance) cameraPerformance.barcodeDetectorQrSupported = true;
+          }
+        } catch (error) {
+          barcodeDetector = null;
+        } finally {
+          if (cameraPerformance) cameraPerformance.detectorInitMs = nowMs() - detectorStartedAt;
+        }
+        if (profile === 'label') await initializeZxingReader_(profile);
+      }
+
+      function scanProfile_() {
+        return currentMode === 'shipping-complete' && completionStep === 'label' ? 'label' : 'qr';
+      }
+
+      async function initializeZxingReader_(profile) {
+        if (profile !== 'label' || zxingReaderProfile === profile && zxingReader) return !!zxingReader;
+        zxingInitError = '';
+        const zxing = window.ZXingBrowser || window.ZXing;
+        if (!zxing || typeof zxing.BrowserMultiFormatReader !== 'function') {
+          zxingInitError = 'グローバルまたはBrowserMultiFormatReaderが見つかりません';
+          if (cameraPerformance) {
+            cameraPerformance.zxingAvailable = false;
+            cameraPerformance.zxingInitError = zxingInitError;
+          }
+          return false;
+        }
+        try {
+          zxingReader = new zxing.BrowserMultiFormatReader();
+          if (typeof zxingReader.decodeFromCanvas !== 'function') {
+            throw new Error('decodeFromCanvasが見つかりません');
+          }
+          zxingReaderProfile = profile;
+          if (cameraPerformance) {
+            cameraPerformance.zxingAvailable = true;
+            cameraPerformance.zxingInitError = '';
+          }
+          return true;
+        } catch (error) {
+          zxingReader = null;
+          zxingReaderProfile = '';
+          zxingInitError = error && error.message ? error.message : 'ZXing初期化失敗';
+          if (cameraPerformance) {
+            cameraPerformance.zxingAvailable = false;
+            cameraPerformance.zxingInitError = zxingInitError;
+          }
+          return false;
+        }
+      }
+
+      function cancelScheduledScan() {
+        if (scanTimer === null) return;
+        if (scanTimerType === 'video_frame' && typeof video.cancelVideoFrameCallback === 'function') {
+          video.cancelVideoFrameCallback(scanTimer);
+        } else {
+          clearTimeout(scanTimer);
+        }
+        scanTimer = null;
+        scanTimerType = '';
+      }
+
+      function scheduleScan() {
+        if (!scanning || scanTimer !== null) return;
+        if (typeof video.requestVideoFrameCallback === 'function') {
+          scanTimerType = 'video_frame';
+          scanTimer = video.requestVideoFrameCallback(() => {
+            scanTimer = null;
+            scanTimerType = '';
+            scanFrame();
+          });
+          return;
+        }
+        scanTimerType = 'timeout';
+        scanTimer = setTimeout(() => {
+          scanTimer = null;
+          scanTimerType = '';
+          scanFrame();
+        }, SCAN_INTERVAL_MS);
+      }
+
+      async function scanFrame() {
+        if (!scanning || decodeInFlight) { scheduleScan(); return; }
+        if (video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA) {
+          scheduleScan();
+          return;
+        }
+        if (requestInFlight) return;
+
+        if (cameraPerformance && cameraPerformance.firstScanEligibleMs === null) {
+          cameraPerformance.firstScanEligibleMs = nowMs() - cameraPerformance.startedAt;
+        }
+
+        decodeInFlight = true;
+        const generation = scanGeneration;
+        const attemptStartedAt = nowMs();
+        try {
+          const result = await decodeFrame();
+          recordScanAttempt(attemptStartedAt, nowMs() - attemptStartedAt, result);
+          if (result.error) {
+            scanning = false;
+            const message = result.error === 'ZXING_UNAVAILABLE'
+              ? '伝票読取ライブラリを読み込めません。下の手入力を使用してください。'
+              : '伝票読取でエラーが発生しました。手入力を使用してください。';
+            showToast(message, 'error');
+          }
+          if (generation === scanGeneration && result.value) handleScanValue_(result.value);
+        } finally {
+          if (generation === scanGeneration) {
+            decodeInFlight = false;
+            scheduleScan();
+          }
+        }
+      }
+
+      async function decodeFrame() {
+        const sourceSide = Math.floor(Math.min(video.videoWidth, video.videoHeight) * SCAN_ROI_FRACTION);
+        if (!sourceSide) return { value: '', decoderPath: 'none', sourceSide: 0, canvasSide: 0 };
+        const targetSide = Math.min(640, sourceSide);
+        if (canvasSide !== targetSide) {
+          canvas.width = targetSide;
+          canvas.height = targetSide;
+          canvasSide = targetSide;
+        }
+        const sourceX = Math.floor((video.videoWidth - sourceSide) / 2);
+        const sourceY = Math.floor((video.videoHeight - sourceSide) / 2);
+        context.drawImage(video, sourceX, sourceY, sourceSide, sourceSide, 0, 0, targetSide, targetSide);
+
+        const profile = scanProfile_();
+        if (profile === 'qr' && barcodeDetector) {
+          try {
+            const detected = await barcodeDetector.detect(canvas);
+            return {
+              value: detected.length && detected[0].rawValue ? detected[0].rawValue : '',
+              decoderPath: 'BarcodeDetector',
+              sourceSide,
+              canvasSide: targetSide
+            };
+          } catch (error) {
+            barcodeDetector = null;
+            if (cameraPerformance) cameraPerformance.barcodeDetectorQrSupported = false;
+          }
+        }
+
+        if (profile === 'label' && !zxingReader) {
+          return { value: '', decoderPath: 'ZXing unavailable', error: 'ZXING_UNAVAILABLE', sourceSide, canvasSide: targetSide };
+        }
+
+        if (profile === 'label' && zxingReader) {
+          try {
+            const result = zxingReader.decodeFromCanvas(canvas);
+            const value = result && typeof result.getText === 'function' ? result.getText() : (result && (result.text || result.rawValue) || '');
+            return { value: value || '', decoderPath: 'ZXing', sourceSide, canvasSide: targetSide };
+          } catch (error) {
+            // NotFoundExceptionの型名はUMD minify後に安定しないため、
+            // フレーム内にコードが無い通常系を含め、ここでは「値なし」として扱う。
+            // API不在・グローバル不在は初期化時に検出して手入力へ誘導する。
+            return { value: '', decoderPath: 'ZXing', sourceSide, canvasSide: targetSide };
+          }
+        }
+
+        const image = context.getImageData(0, 0, canvasSide, canvasSide);
+        const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'dontInvert' });
+        return {
+          value: code && code.data ? code.data : '',
+          decoderPath: 'jsQR',
+          sourceSide,
+          canvasSide: targetSide
+        };
+      }
+
+      function validateOrderCode(rawValue) {
+        const orderId = String(rawValue || '').trim();
+        if (!orderId) return { ok: false, silent: true, orderId: '' };
+        return { ok: /^\d+$/.test(orderId), silent: false, orderId };
+      }
+
+      async function acceptPrintQr(orderId) {
+        const now = Date.now();
+        const existingJob = printJobByOrderId.get(orderId);
+        if (existingJob) {
+          if (orderId !== lastScannedValue || now - lastScannedAt >= 2500) {
+            lastScannedValue = orderId;
+            lastScannedAt = now;
+            const stateLabel = existingJob.state === 'error' ? 'エラー一覧にあります。' : 'すでに受付済みです。';
+            showToast(`${orderId}は${stateLabel}`, 'warning');
+          }
+          return;
+        }
+
+        lastScannedValue = orderId;
+        lastScannedAt = now;
+        requestInFlight = true;
+        const generation = scanGeneration;
+        const scanMetrics = activeScanPerformance;
+        const feedbackStartedAt = nowMs();
+        if (scanMetrics) {
+          scanMetrics.detectedAt = feedbackStartedAt;
+          scanMetrics.detectWaitMs = feedbackStartedAt - scanMetrics.startedAt;
+          scanMetrics.scanAcceptedAt = adjustedIsoNow();
+        }
+        enqueuePrintJob(orderId, scanMetrics);
+        const feedbackToken = ++scanFeedbackToken;
+        setScanFeedback(true, 'QR受付済み・処理中…');
+        if (typeof navigator.vibrate === 'function') {
+          try { navigator.vibrate(50); } catch (error) { /* 非対応端末では視覚表示のみ */ }
+        }
+        const paintedAt = await waitForNextPaint();
+        if (scanMetrics) scanMetrics.feedbackPaintMs = paintedAt - feedbackStartedAt;
+        requestInFlight = false;
+
+        if (generation === scanGeneration && scanning && currentMode === 'print') {
+          beginScanCycle();
+          scheduleScan();
+          pumpPrintQueue();
+        }
+        setTimeout(() => {
+          if (feedbackToken === scanFeedbackToken && currentMode === 'print') setScanFeedback(false);
+        }, 220);
+      }
+
+      async function handleShippingQr(orderId) {
+        const now = Date.now();
+        if (requestInFlight || (orderId === lastScannedValue && now - lastScannedAt < 2500)) return;
+        lastScannedValue = orderId;
+        lastScannedAt = now;
+        requestInFlight = true;
+        const generation = scanGeneration;
+        const scanMetrics = activeScanPerformance;
+        const feedbackStartedAt = nowMs();
+        if (scanMetrics) {
+          scanMetrics.detectedAt = feedbackStartedAt;
+          scanMetrics.detectWaitMs = feedbackStartedAt - scanMetrics.startedAt;
+        }
+        setScanFeedback(true, 'QR読取済み・照会中…');
+        if (typeof navigator.vibrate === 'function') {
+          try { navigator.vibrate(50); } catch (error) { /* 非対応端末では視覚表示のみ */ }
+        }
+        const paintedAt = await waitForNextPaint();
+        if (scanMetrics) scanMetrics.feedbackPaintMs = paintedAt - feedbackStartedAt;
+        if (generation !== scanGeneration || !requestInFlight) return;
+        submitShipPrepScan(orderId, scanMetrics);
+      }
+
+      function handleQr(rawValue) {
+        const validation = validateOrderCode(rawValue);
+        const now = Date.now();
+        if (!validation.ok) {
+          if (!validation.silent && (validation.orderId !== lastRejectedValue || now - lastRejectedAt >= 2500)) {
+            lastRejectedValue = validation.orderId;
+            lastRejectedAt = now;
+            showToast('注文書QRを枠の中央に合わせてください。', 'warning');
+          }
+          return;
+        }
+        if (currentMode === 'print') acceptPrintQr(validation.orderId);
+        else if (currentMode === 'shipping') handleShippingQr(validation.orderId);
+        else if (currentMode === 'shipping-complete' && completionStep === 'orders') acceptCompletionOrder_(validation.orderId);
+      }
+
+      function handleScanValue_(rawValue) {
+        if (currentMode === 'shipping-complete' && completionStep === 'label') {
+          acceptCompletionLabel_(String(rawValue || '').trim());
+          return;
+        }
+        handleQr(rawValue);
+      }
+
+      function acceptCompletionOrder_(rawValue) {
+        const validation = validateOrderCode(rawValue);
+        if (!validation.ok) {
+          showToast('注文書QR（数字のみ）を読み取ってください。', 'warning');
+          return;
+        }
+        if (completionOrders.some(item => item.orderId === validation.orderId) || requestInFlight) {
+          showToast(`${validation.orderId}は既に読み取り済みです。`, 'warning');
+          return;
+        }
+        completionPendingOrderId = validation.orderId;
+        submitCompletionOrderScan_(validation.orderId, null);
+      }
+
+      async function submitCompletionOrderScan_(orderId, sessionShipmentId) {
+        requestInFlight = true;
+        setScanFeedback(true, '注文QR読取済み・照会中…');
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_done_scan_order',
+            id_token: idToken,
+            mode: completionConsolidation === 'single_parcel' ? 'consolidated' : 'individual',
+            order_id: orderId,
+            session_shipment_id: sessionShipmentId || completionSessionShipmentId || null
+          }) });
+          const result = await fetchJsonWithPerformance('ship_done_scan_order', body, null);
+          const data = result.data;
+          if (handleAuthError(data)) return;
+          if (!data.ok) {
+            if (data.error_code === 'MULTIPLE_SHIP_PREP') renderCompletionCandidates_(data.candidates || [], orderId);
+            showToast(data.error || '注文を発送完了の対象にできません。', 'error');
+            return;
+          }
+          completionSessionShipmentId = data.shipment_id || completionSessionShipmentId;
+          completionExpectedOrderCount = Number(data.expected_order_count) || completionExpectedOrderCount || 1;
+          const scannedId = String(data.order_id || orderId);
+          if (!completionOrders.some(item => item.orderId === scannedId)) {
+            completionOrders.push({ orderId: scannedId, orderNumber: data.order_number || '' });
+          }
+          renderCompletionControls_();
+          if (completionConsolidation === 'individual') beginCompletionLabelStep_();
+          else showToast(`${data.order_number || orderId}を追加しました。`, 'success');
+        } catch (error) {
+          showToast('注文照会に失敗しました。もう一度お試しください。', 'error');
+        } finally {
+          requestInFlight = false;
+          setScanFeedback(false);
+          if (currentMode === 'shipping-complete' && completionStep === 'orders') returnToCamera();
+        }
+      }
+
+      function renderCompletionCandidates_(candidates, orderId) {
+        const container = document.getElementById('completion-candidates');
+        if (!container) return;
+        completionPendingOrderId = orderId;
+        container.textContent = '';
+        candidates.forEach(candidate => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'completion-action';
+          button.textContent = `${candidate.shipment_id || '発送ID不明'} / ${candidate.carrier_label || candidate.carrier || '運送会社不明'} / ${candidate.status || ''}`;
+          button.addEventListener('click', () => {
+            container.hidden = true;
+            submitCompletionOrderScan_(completionPendingOrderId, candidate.shipment_id || null);
+          });
+          container.appendChild(button);
+        });
+        container.hidden = candidates.length === 0;
+        document.getElementById('completion-controls').hidden = false;
+        showScreen('camera-screen');
+      }
+
+      async function beginCompletionLabelStep_() {
+        if (!completionOrders.length) {
+          showToast('先に注文書QRを読み取ってください。', 'warning');
+          return;
+        }
+        if (completionConsolidation === 'single_parcel' && completionExpectedOrderCount && completionOrders.length !== completionExpectedOrderCount) {
+          showToast(`注文数が不足しています（${completionOrders.length}/${completionExpectedOrderCount}件）。読み残しを確認してください。`, 'error');
+          return;
+        }
+        completionStep = 'label';
+        requestInFlight = false;
+        scanning = false;
+        cancelScheduledScan();
+        scanGeneration += 1;
+        decodeInFlight = false;
+        await initializeZxingReader_('label');
+        updateCameraMode();
+        scanning = true;
+        showScreen('camera-screen');
+        beginScanCycle();
+        scheduleScan();
+      }
+
+      function acceptCompletionLabel_(rawValue) {
+        const value = String(rawValue || '').trim();
+        if (!value || requestInFlight || completionLabelValues.includes(value)) return;
+        completionLabelValues.push(value);
+        renderCompletionControls_();
+        showToast('伝票の値を受け付けました。続けて他のコードも読み取れます。', 'success');
+      }
+
+      async function submitCompletionPlan_() {
+        if (!completionLabelValues.length) {
+          showToast('伝票から値を1つ以上読み取ってください。', 'warning');
+          return;
+        }
+        requestInFlight = true;
+        scanning = false;
+        cancelScheduledScan();
+        scanGeneration += 1;
+        decodeInFlight = false;
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_done_plan',
+            id_token: idToken,
+            mode: completionConsolidation === 'single_parcel' ? 'consolidated' : 'individual',
+            shipment_id: completionSessionShipmentId,
+            order_ids: completionOrders.map(item => item.orderId),
+            label_values: completionLabelValues
+          }) });
+          const result = await fetchJsonWithPerformance('ship_done_plan', body, null);
+          const data = result.data;
+          if (handleAuthError(data)) return;
+          if (!data.ok) {
+            showToast(data.error || '伝票を照合できませんでした。', 'error');
+            returnToCamera();
+            return;
+          }
+          completionPlanId = data.plan_id || '';
+          completionNotify = data.notify;
+          completionCardsMissing = Array.isArray(data.cards_missing) ? data.cards_missing : [];
+          completionRawTrackingValue = data.tracking_number || '';
+          renderCompletionResult_(data);
+          showScreen('completion-result-screen');
+        } catch (error) {
+          showToast('伝票照合に失敗しました。もう一度お試しください。', 'error');
+          returnToCamera();
+        } finally {
+          requestInFlight = false;
+        }
+      }
+
+      function renderCompletionControls_() {
+        const label = document.getElementById('completion-step-label');
+        const count = document.getElementById('completion-count');
+        const list = document.getElementById('completion-list');
+        const candidates = document.getElementById('completion-candidates');
+        const close = document.getElementById('completion-close-orders');
+        const closeLabel = document.getElementById('completion-close-label');
+        if (!label || !count || !list || !close || !closeLabel) return;
+        label.textContent = completionStep === 'label'
+          ? (completionConsolidation === 'single_parcel' ? 'まとめ発送 / 伝票' : '個別発送 / 伝票')
+          : (completionConsolidation === 'single_parcel' ? 'まとめ発送 / 注文書QR' : '個別発送 / 注文書QR');
+        count.textContent = `${completionOrders.length}件`;
+        list.textContent = '';
+        completionOrders.forEach(item => {
+          const row = document.createElement('div');
+          row.className = 'completion-item';
+          row.textContent = item.orderId;
+          list.appendChild(row);
+        });
+        close.hidden = completionStep !== 'orders' || completionConsolidation !== 'single_parcel';
+        closeLabel.hidden = completionStep !== 'label';
+        if (completionStep === 'label') {
+          count.textContent = `${completionLabelValues.length}個の値`;
+          label.textContent = `${completionConsolidation === 'single_parcel' ? 'まとめ発送' : '個別発送'} / 伝票`;
+          list.textContent = '';
+          completionLabelValues.forEach(value => {
+            const row = document.createElement('div');
+            row.className = 'completion-item';
+            row.textContent = value;
+            list.appendChild(row);
+          });
+        }
+        if (candidates) candidates.hidden = true;
+      }
+
+      function renderCompletionResult_(result) {
+        document.getElementById('completion-tracking-number').textContent = result.tracking_display || result.tracking_number || result.trackingNumber || '読み取り値なし';
+        const orders = Array.isArray(result.orders) && result.orders.length
+          ? result.orders.map(order => order.order_number || order.order_id).join(' / ')
+          : completionOrders.map(item => item.orderNumber || item.orderId).join(' / ');
+        document.getElementById('completion-result-orders').textContent = orders;
+        document.getElementById('completion-result-shipment').textContent = result.shipment_id || result.shipmentId || completionSessionShipmentId || 'P4照合待ち';
+        document.getElementById('completion-result-carrier').textContent = result.carrier_label || result.carrier || 'P4照合待ち';
+        const cardNames = Array.isArray(result.cards) ? result.cards.map(card => card.name).filter(Boolean) : [];
+        document.getElementById('completion-result-card').textContent = cardNames.join(' / ') || result.cardName || 'P4照合待ち';
+        const confirm = document.getElementById('completion-confirm-button');
+        const ready = result.ok === true || result.readyForConfirmation === true;
+        confirm.disabled = !ready;
+        document.getElementById('completion-result-notice').textContent = ready
+          ? (result.notify === false ? '顧客通知なし。伝票の印字と一致することを確認してください。' : '伝票の印字と一致することを確認してから発送確定してください。')
+          : 'P3/P4の照合結果を受け取るまで発送確定はできません。';
+        const missing = Array.isArray(result.cards_missing) ? result.cards_missing : [];
+        if (missing.length) document.getElementById('completion-result-card').textContent = 'カード削除なし（対象カードなし）';
+      }
+
+      function handleAuthError(data) {
+        if (data.error_code === 'TOKEN_MISSING' || data.error_code === 'TOKEN_INVALID') {
+          showSignIn('サインインの有効期限が切れました。もう一度サインインしてください。');
+          return true;
+        }
+        if (data.error_code === 'FORBIDDEN') {
+          showForbidden();
+          return true;
+        }
+        return false;
+      }
+
+      async function submitShipPrepScan(orderId, scanMetrics) {
+        let measurement = null;
+        try {
+          const clientDispatchedAt = adjustedIsoNow();
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_prep_scan', order_id: orderId, id_token: idToken,
+            scan_accepted_at: (scanMetrics && scanMetrics.scanAcceptedAt) || clientDispatchedAt,
+            client_dispatched_at: clientDispatchedAt
+          }) });
+          const result = await fetchJsonWithPerformance('ship_prep_scan', body, scanMetrics);
+          const data = result.data;
+          measurement = result.measurement;
+          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
+          if (!data.ok) {
+            showToast(data.error || '注文を取得できませんでした。', 'error');
+            returnToCamera();
+            finishRequestPerformance(measurement, 'api_error');
+            return;
+          }
+          if (shippingItems.some(item => item.order_id === data.order_id)) {
+            requestInFlight = false;
+            showToast('この注文は既に追加済みです。', 'warning');
+            returnToCamera();
+            finishRequestPerformance(measurement, 'duplicate');
+            return;
+          }
+          addShippingItem(data);
+          showToast(`${data.order_number || data.order_id}を一覧に追加しました`, 'success');
+          returnToCamera();
+          finishRequestPerformance(measurement, 'success');
+        } catch (error) {
+          measurement = error.performanceMeasurement || measurement;
+          showToast('通信に失敗しました。もう一度お試しください。', 'error');
+          returnToCamera();
+          finishRequestPerformance(measurement, 'network_error');
+        }
+      }
+
+      function addShippingItem(data) {
+        shippingItems.push({
+          order_id: data.order_id,
+          order_number: data.order_number,
+          store: data.store,
+          team_name: data.team_name || '',
+          shipping_method: data.shipping_method || 'unknown',
+          is_team_pickup: Boolean(data.is_team_pickup),
+          is_store_pickup: Boolean(data.is_store_pickup),
+          shipping_address: data.shipping_address ? { ...data.shipping_address } : null,
+          suggested_carrier: data.suggested_carrier,
+          carrier_decided_at: data.carrier_decided_at,
+          rate_snapshot_version: data.rate_snapshot_version,
+          decision_reason: data.decision_reason,
+          region: data.region
+        });
+        renderShippingList();
+      }
+
+      function formatJapaneseName(destination) {
+        const lastName = String(destination.last_name || '').trim();
+        const firstName = String(destination.first_name || '').trim();
+        if (lastName || firstName) return [lastName, firstName].filter(Boolean).join(' ');
+        const name = String(destination.name || '').trim();
+        const parts = name.split(/\s+/).filter(Boolean);
+        return parts.length === 2 ? `${parts[1]} ${parts[0]}` : name;
+      }
+
+      function carrierLabel_(carrier) {
+        return carrier === 'sagawa' ? '佐川急便' : carrier === 'yamato' ? 'ヤマト運輸' : carrier || '不明';
+      }
+
+      function renderShippingList() {
+        const list = document.getElementById('ship-list');
+        list.textContent = '';
+        document.getElementById('ship-count').textContent = `${shippingItems.length}件`;
+        shippingItems.forEach((item, index) => {
+          const row = document.createElement('div');
+          row.className = 'ship-item';
+          const label = document.createElement('span');
+          const method = item.shipping_method === 'clickpost' ? 'クリックポスト' : item.shipping_method === 'parcel' ? (item.suggested_carrier ? carrierLabel_(item.suggested_carrier) : '宅配便') : '配送方法不明';
+          const flags = [item.is_team_pickup ? 'チーム受取' : '', item.is_store_pickup ? '店舗受取' : ''].filter(Boolean).join('・');
+          label.textContent = `${item.order_number || item.order_id} / ${method}${flags ? ` / ${flags}` : ''}`;
+          const remove = document.createElement('button');
+          remove.className = 'ship-remove';
+          remove.type = 'button';
+          remove.textContent = '×';
+          remove.setAttribute('aria-label', `${item.order_number || item.order_id}を一覧から削除`);
+          remove.addEventListener('click', () => {
+            shippingItems.splice(index, 1);
+            renderShippingList();
+          });
+          row.append(label, remove);
+          list.appendChild(row);
+        });
+      }
+
+      function populateTeamDestinations(destinations) {
+        const select = document.getElementById('team-destination-select');
+        select.textContent = '';
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = '選択してください';
+        select.appendChild(empty);
+        destinations.forEach(destination => {
+          const option = document.createElement('option');
+          option.value = destination.master_id || '';
+          option.textContent = `${destination.team_name || ''} / ${destination.name || ''} / ${destination.prefecture || ''}`;
+          option.dataset.destination = JSON.stringify(destination);
+          select.appendChild(option);
+        });
+        populateTeamPrefectures_();
+      }
+
+      function populateTeamPrefectures_() {
+        const select = document.getElementById('team-prefecture');
+        if (!select) return;
+        const currentValue = select.value;
+        select.textContent = '';
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = '選択してください';
+        select.appendChild(empty);
+        JAPANESE_PREFECTURES.forEach(prefecture => {
+          const option = document.createElement('option');
+          option.value = prefecture;
+          option.textContent = prefecture;
+          select.appendChild(option);
+        });
+        select.value = JAPANESE_PREFECTURES.includes(currentValue) ? currentValue : '';
+      }
+
+      function clearManualDestinationFields_() {
+        ['team-postal-code', 'team-city', 'team-address', 'team-address2', 'team-name', 'team-company', 'team-phone']
+          .forEach(id => { const input = document.getElementById(id); if (input) input.value = ''; });
+        const prefecture = document.getElementById('team-prefecture');
+        if (prefecture) prefecture.value = '';
+      }
+
+      function closeManualDestinationFields_() {
+        clearManualDestinationFields_();
+        const fields = document.getElementById('team-manual-fields');
+        const toggle = document.getElementById('team-manual-toggle');
+        if (fields) fields.hidden = true;
+        if (toggle) toggle.hidden = false;
+      }
+
+      function resetRepresentativeDestinationState_() {
+        const master = document.getElementById('team-destination-select');
+        if (master) master.value = '';
+        closeManualDestinationFields_();
+      }
+
+      function showConsolidationScreen() {
+        if (!shippingItems.length) { showToast('発送準備の一覧が空です。', 'error'); return; }
+        scanning = false;
+        requestInFlight = false;
+        document.getElementById('team-order-message').textContent = `${shippingItems.length}件の発送方法を選択してください。`;
+        showScreen('team-destination-screen');
+      }
+
+      function destinationFromForm() {
+        const select = document.getElementById('team-destination-select');
+        const selected = select.options[select.selectedIndex];
+        if (selected && selected.dataset.destination) return JSON.parse(selected.dataset.destination);
+        // 手入力欄が閉じている＝手入力モードではない。閉じる操作は値をクリアするが、
+        // それに依存せず「開いている時だけ読む」をここで保証する。クリアを伴わない
+        // 非表示経路が将来追加されても、古い住所が送信されることはない。
+        const manualFields = document.getElementById('team-manual-fields');
+        const manualActive = !!manualFields && !manualFields.hidden;
+        const read = id => (manualActive ? document.getElementById(id).value.trim() : '');
+        return {
+          postal_code: read('team-postal-code'),
+          prefecture: manualActive ? document.getElementById('team-prefecture').value : '',
+          city: read('team-city'),
+          address1: read('team-address'),
+          address2: read('team-address2'),
+          name: read('team-name'),
+          company: read('team-company'),
+          phone: read('team-phone')
+        };
+      }
+
+      function useRepresentativeDestination() {
+        const destination = destinationFromForm();
+        if (!destination.postal_code || !destination.prefecture || !destination.city || !destination.address1 || !destination.name || !destination.phone) {
+          showToast('郵便番号・都道府県・市区町村・番地・氏名・電話番号を入力または選択してください。', 'error');
+          return;
+        }
+        showCarrierConfirmation('single_parcel', destination);
+      }
+
+      function suggestedCarrierForDestination_(destination) {
+        const prefecture = destination && String(destination.prefecture || '').trim();
+        const suggestions = shippingContext && shippingContext.carrier_suggestion_by_prefecture;
+        return prefecture && suggestions ? (suggestions[prefecture] || '') : '';
+      }
+
+      function showCarrierConfirmation(consolidation, destination = null, existingState = null) {
+        if (!shippingItems.length) { showToast('発送準備の一覧が空です。', 'error'); return; }
+        const parcelItems = shippingItems.filter(item => item.shipping_method === 'parcel');
+        const state = existingState || {
+          consolidation,
+          destination,
+          confirmedCarrier: consolidation === 'single_parcel' ? suggestedCarrierForDestination_(destination) : null,
+          items: shippingItems.map(item => {
+            if (consolidation === 'single_parcel') return { ...item };
+            return { ...item, confirmed_carrier: item.shipping_method === 'parcel' ? (item.suggested_carrier || '') : null };
+          })
+        };
+        // クリックポストだけのバッチには確認すべき運送会社が無い（配送方法で固定のため）。
+        // 確認画面を出さずにそのまま確定へ進む。
+        // 以前はここで「宅配便明細がありません」と止めており、**クリックポスト単体の
+        // 発送が一切確定できなかった**（2026-08-08 実機で発覚）。
+        if (!parcelItems.length) {
+          pendingCarrierConfirmation = null;
+          submitFinalize(state.consolidation, state.destination, {}, state);
+          return;
+        }
+
+        pendingCarrierConfirmation = state;
+        const list = document.getElementById('carrier-confirmation-list');
+        list.textContent = '';
+        if (consolidation === 'single_parcel') {
+          appendCarrierConfirmationRow_(list, 'まとめ発送（1個口）', state.confirmedCarrier, state, null);
+        } else {
+          state.items.forEach((item, index) => {
+            appendCarrierConfirmationRow_(
+              list,
+              `${item.order_number || item.order_id}${item.is_team_pickup ? ' / チーム受取' : ''}${item.is_store_pickup ? ' / 店舗受取' : ''}`,
+              item.suggested_carrier,
+              state,
+              index,
+              item.shipping_method
+            );
+          });
+        }
+        showScreen('carrier-confirmation-screen');
+      }
+
+      function appendCarrierConfirmationRow_(list, labelText, suggestedCarrier, state, itemIndex, shippingMethod = 'parcel') {
+        const row = document.createElement('div');
+        row.className = 'carrier-confirmation-row';
+        const label = document.createElement('div');
+        label.className = 'carrier-confirmation-label';
+        label.textContent = labelText;
+        const detail = document.createElement('small');
+        detail.textContent = shippingMethod === 'clickpost' ? '配送方法で固定' : `サジェスト: ${carrierLabel_(suggestedCarrier)}`;
+        label.appendChild(detail);
+        row.appendChild(label);
+        if (shippingMethod === 'clickpost') {
+          const fixed = document.createElement('span');
+          fixed.className = 'carrier-fixed';
+          fixed.textContent = 'クリックポスト';
+          row.appendChild(fixed);
+        } else {
+          const select = document.createElement('select');
+          select.className = 'carrier-confirmation-select';
+          select.setAttribute('aria-label', `${labelText}の運送会社`);
+          select.appendChild(new Option('選択してください', '', true, false));
+          [['sagawa', '佐川急便'], ['yamato', 'ヤマト運輸']].forEach(([value, text]) => {
+            const option = new Option(text, value);
+            select.appendChild(option);
+          });
+          select.value = itemIndex === null ? state.confirmedCarrier : state.items[itemIndex].confirmed_carrier;
+          select.addEventListener('change', () => {
+            if (itemIndex === null) state.confirmedCarrier = select.value;
+            else state.items[itemIndex].confirmed_carrier = select.value;
+          });
+          row.appendChild(select);
+        }
+        list.appendChild(row);
+      }
+
+      function confirmCarrierSelection() {
+        if (!pendingCarrierConfirmation) return;
+        const state = pendingCarrierConfirmation;
+        if (state.consolidation === 'single_parcel' && !state.confirmedCarrier) {
+          showToast('運送会社を選択してください。', 'error');
+          return;
+        }
+        if (state.consolidation === 'individual' && state.items.some(item => item.shipping_method === 'parcel' && !item.confirmed_carrier)) {
+          showToast('宅配便の運送会社を選択してください。', 'error');
+          return;
+        }
+        pendingCarrierConfirmation = null;
+        submitFinalize(state.consolidation, state.destination, {}, state);
+      }
+
+      function collectIssueResolutions() {
+        const resolutions = {};
+        document.querySelectorAll('[data-issue-code]').forEach(select => { resolutions[select.dataset.issueCode] = select.value; });
+        autoConfirmedIssueCodes.forEach(code => { resolutions[code] = 'confirmed'; });
+        return resolutions;
+      }
+
+      function shippingIssueLabel(code) {
+        const labels = {
+          SHIPPING_METHOD_UNKNOWN: '配送方法不明',
+          CONSOLIDATED_DESTINATION_REQUIRED: 'まとめ発送の送付先が必要',
+          CLICKPOST_CANNOT_CONSOLIDATE: 'クリックポストはまとめ不可',
+          MULTI_STORE_CANNOT_CONSOLIDATE: '複数ストアはまとめ不可',
+          TEAM_PICKUP_NOT_MERGED: 'チーム受取を個別発送',
+          STORE_PICKUP_INCLUDED: '店舗受取を含む発送',
+          INVALID_CARRIER: '運送会社の指定が不正です',
+          CARRIER_NOT_CONFIRMED: '運送会社が未確認です',
+          CARRIER_NOT_ALLOWED_FOR_METHOD: '配送方法と運送会社の組み合わせが不正です',
+          INVALID_CARRIER_SCOPE: '運送会社の指定場所が不正です',
+          CARRIER_UNAVAILABLE_FOR_REGION: '地域で取り扱えない運送会社です',
+          PREFECTURE_UNKNOWN: '都道府県を判定できません',
+          RATE_SNAPSHOT_UNAVAILABLE: '運賃情報を取得できません'
+        };
+        return labels[code] || code || '発送確認';
+      }
+
+      function renderShippingIssues(data) {
+        pendingIssueData = data;
+        autoConfirmedIssueCodes = [];
+        const list = document.getElementById('shipping-issues-list');
+        list.textContent = '';
+        const issues = Array.isArray(data.issues) ? data.issues : [];
+        const hasBlock = issues.some(issue => issue.severity === 'block');
+        document.getElementById('shipping-issues-message').textContent = hasBlock ? '内容を修正してから再度確定してください。' : '確認事項があります。内容を確認して続行してください。';
+        issues.forEach(issue => {
+          const row = document.createElement('div');
+          row.textContent = `【${issue.severity === 'block' ? '停止' : '確認'}】${shippingIssueLabel(issue.code)}: ${issue.message || issue.code}`;
+          if (issue.severity === 'confirm') autoConfirmedIssueCodes.push(issue.code);
+          list.appendChild(row);
+        });
+        document.getElementById('shipping-issues-confirm').hidden = hasBlock;
+        showScreen('shipping-issues-screen');
+      }
+
+      async function submitFinalize(consolidation, destination = null, issueResolutions = {}, carrierState = null) {
+        if (!shippingItems.length) { showToast('発送準備の一覧が空です。', 'error'); return; }
+        if (finalizeInFlight) return;
+        finalizeInFlight = true;
+        scanning = false;
+        requestInFlight = true;
+        showLoading('伝票を生成しています…');
+        const items = carrierState ? carrierState.items : shippingItems;
+        const confirmedCarrier = consolidation === 'single_parcel' && carrierState ? carrierState.confirmedCarrier : null;
+        pendingFinalize = { consolidation, destination, items, confirmedCarrier };
+        let measurement = null;
+        try {
+          finalizeTransportAttempt += 1;
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_prep_finalize', id_token: idToken, finalize_request_id: finalizeRequestId,
+            transport_attempt: finalizeTransportAttempt, consolidation, items,
+            ...(confirmedCarrier ? { confirmed_carrier: confirmedCarrier } : {}),
+            ...(destination ? { consolidated_destination: destination } : {}),
+            ...(Object.keys(issueResolutions).length ? { issue_resolutions: issueResolutions } : {})
+          }) });
+          const result = await fetchJsonWithPerformance('ship_prep_finalize', body, null);
+          const data = result.data;
+          measurement = result.measurement;
+          if (handleAuthError(data)) { finalizeInFlight = false; finishRequestPerformance(measurement, 'auth_error'); return; }
+          if (!data.ok) {
+            finalizeInFlight = false;
+            requestInFlight = false;
+            if (Array.isArray(data.issues)) renderShippingIssues(data);
+            else { showToast(data.error || '発送準備を確定できませんでした。', 'error'); showScreen('team-destination-screen'); }
+            finishRequestPerformance(measurement, 'api_error');
+            return;
+          }
+          const artifacts = data.artifacts || [];
+          const warnings = artifacts.flatMap(artifact => artifact.warnings || []);
+          const warningList = document.getElementById('shipping-warnings');
+          warningList.textContent = '';
+          warnings.forEach(warning => { const li = document.createElement('div'); li.textContent = `・${warning}`; warningList.appendChild(li); });
+          const itemCount = artifacts.reduce((sum, artifact) => sum + (Number(artifact.item_count) || 0), 0);
+          document.getElementById('complete-message').textContent = `Dropboxに保存しました（${itemCount || shippingItems.length}件）`;
+          const carrierLabels = { sagawa: '佐川急便', yamato: 'ヤマト運輸', clickpost: 'クリックポスト' };
+          const breakdown = new Map();
+          artifacts.forEach(artifact => {
+            const key = artifact.carrier || '不明';
+            breakdown.set(key, (breakdown.get(key) || 0) + (Number(artifact.item_count) || 0));
+          });
+          const breakdownEl = document.getElementById('shipping-artifact-breakdown');
+          breakdownEl.textContent = '';
+          breakdown.forEach((count, carrier) => {
+            const line = document.createElement('div');
+            line.textContent = `・${carrierLabels[carrier] || carrier}: ${count}件`;
+            breakdownEl.appendChild(line);
+          });
+          requestInFlight = false;
+          finalizeInFlight = false;
+          showScreen('complete-screen');
+          finishRequestPerformance(measurement, 'success');
+        } catch (error) {
+          measurement = error.performanceMeasurement || measurement;
+          finalizeInFlight = false;
+          requestInFlight = false;
+          showToast('通信に失敗しました。もう一度お試しください。', 'error');
+          showScreen('team-destination-screen');
+          finishRequestPerformance(measurement, 'network_error');
+        }
+      }
+
+      function finalizeShipping() { showConsolidationScreen(); }
+
+      document.getElementById('print-mode-button').addEventListener('click', startPrintMode);
+      document.getElementById('ship-mode-button').addEventListener('click', showCarrierSelect);
+      document.getElementById('completion-mode-button').addEventListener('click', showCompletionModeSelect);
+      document.getElementById('completion-individual-button').addEventListener('click', () => startCompletionMode('individual'));
+      document.getElementById('completion-single-parcel-button').addEventListener('click', () => startCompletionMode('single_parcel'));
+      document.getElementById('completion-back-button').addEventListener('click', showModeSelect);
+      document.getElementById('sagawa-button').addEventListener('click', () => startShippingMode());
+      document.getElementById('carrier-back-button').addEventListener('click', showModeSelect);
+      document.getElementById('retry-button').addEventListener('click', startCamera);
+      document.getElementById('forbidden-button').addEventListener('click', () => showSignIn());
+      document.getElementById('individual-button').addEventListener('click', () => showCarrierConfirmation('individual'));
+      // 代表送付先は常時表示。「まとめ発送」は検証して次へ進む単一機能とする。
+      document.getElementById('single-parcel-button').addEventListener('click', useRepresentativeDestination);
+      document.getElementById('team-destination-select').addEventListener('change', event => {
+        if (event.target.value) closeManualDestinationFields_();
+      });
+      document.getElementById('team-manual-toggle').addEventListener('click', () => {
+        document.getElementById('team-destination-select').value = '';
+        document.getElementById('team-manual-fields').hidden = false;
+        document.getElementById('team-manual-toggle').hidden = true;
+      });
+      document.getElementById('team-manual-close').addEventListener('click', closeManualDestinationFields_);
+      // 「戻る」はスキャン画面へ戻す。以前はフォームを畳んで同じ画面を出し直すだけで、
+      // どこへも戻れていなかった。
+      document.getElementById('team-address-cancel').addEventListener('click', () => {
+        returnToCamera();
+      });
+      document.getElementById('ship-finalize-button').addEventListener('click', finalizeShipping);
+      document.getElementById('completion-close-orders').addEventListener('click', beginCompletionLabelStep_);
+      document.getElementById('completion-close-label').addEventListener('click', submitCompletionPlan_);
+      document.getElementById('completion-result-cancel').addEventListener('click', () => {
+        completionRawTrackingValue = '';
+        completionStep = 'label';
+        requestInFlight = false;
+        startCamera();
+      });
+      document.getElementById('completion-confirm-button').addEventListener('click', () => {
+        if (!completionRawTrackingValue) return;
+        completionConfirmedTracking = completionRawTrackingValue;
+        showToast('確認値を保持しました。P5承認後に実行します。', 'success');
+      });
+      document.getElementById('manual-scan-submit').addEventListener('click', () => {
+        const input = document.getElementById('manual-scan-input');
+        const value = input.value.trim();
+        if (!value) return;
+        input.value = '';
+        handleScanValue_(value);
+      });
+      document.getElementById('manual-scan-input').addEventListener('keydown', event => {
+        if (event.key === 'Enter') document.getElementById('manual-scan-submit').click();
+      });
+      document.getElementById('manual-scan-cancel').addEventListener('click', () => {
+        document.getElementById('manual-scan-input').value = '';
+        document.getElementById('manual-scan-input').blur();
+      });
+      document.getElementById('carrier-confirmation-back').addEventListener('click', () => showConsolidationScreen());
+      document.getElementById('carrier-confirmation-submit').addEventListener('click', confirmCarrierSelection);
+      document.getElementById('shipping-issues-back').addEventListener('click', () => {
+        if (pendingFinalize && pendingFinalize.consolidation === 'individual') {
+          showCarrierConfirmation('individual', null, { consolidation: 'individual', destination: null, confirmedCarrier: null, items: pendingFinalize.items });
+        } else if (pendingFinalize && pendingFinalize.consolidation === 'single_parcel') {
+          showCarrierConfirmation('single_parcel', pendingFinalize.destination, { consolidation: 'single_parcel', destination: pendingFinalize.destination, confirmedCarrier: pendingFinalize.confirmedCarrier, items: pendingFinalize.items });
+        } else {
+          showConsolidationScreen();
+        }
+      });
+      document.getElementById('shipping-issues-confirm').addEventListener('click', () => {
+        if (!pendingFinalize) return;
+        submitFinalize(
+          pendingFinalize.consolidation,
+          pendingFinalize.destination,
+          collectIssueResolutions(),
+          { items: pendingFinalize.items, confirmedCarrier: pendingFinalize.confirmedCarrier }
+        );
+      });
+      document.getElementById('complete-next-button').addEventListener('click', () => startShippingMode());
+      document.getElementById('install-hint-close').addEventListener('click', () => {
+        document.getElementById('install-hint').classList.remove('show');
+      });
+      perfToggle.addEventListener('change', () => {
+        debugPerformanceEnabled = perfToggle.checked;
+        renderPerformancePanel();
+      });
+      initializeGoogleSignIn();
+    })();
+  </script>
+</body>
+</html>
