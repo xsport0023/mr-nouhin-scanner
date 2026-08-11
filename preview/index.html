@@ -308,8 +308,15 @@
       const SCAN_ROI_FRACTION = 0.75;
       const COMPLETION_SCAN_CONFIG = {
         sagawa: { shape: 'band', widthFraction: 0.75, heightFraction: 0.38, hint: '横長の枠に、読みたい佐川のバーコードを1本収めてください' },
-        yamato: { shape: 'square', widthFraction: 0.75, heightFraction: 0.75, hint: '伝票のQRまたはバーコードを枠に収めてください' },
-        clickpost: { shape: 'square', widthFraction: 0.75, heightFraction: 0.75, hint: '伝票のQRまたはバーコードを枠に収めてください' }
+        yamato: { shape: 'square', widthFraction: 0.75, heightFraction: 0.75, hint: '伝票のバーコードを枠に収めてください' },
+        clickpost: { shape: 'square', widthFraction: 0.75, heightFraction: 0.75, hint: '伝票のバーコードを枠に収めてください' }
+      };
+      const COMPLETION_LABEL_CANVAS_WIDTH = 1280;
+      const ZXING_BARCODE_FORMAT_NAMES = {
+        0: 'AZTEC', 1: 'CODABAR', 2: 'CODE_39', 3: 'CODE_93', 4: 'CODE_128',
+        5: 'DATA_MATRIX', 6: 'EAN_8', 7: 'EAN_13', 8: 'ITF', 9: 'MAXICODE',
+        10: 'PDF_417', 11: 'QR_CODE', 12: 'RSS_14', 13: 'RSS_EXPANDED',
+        14: 'UPC_A', 15: 'UPC_E', 16: 'UPC_EAN_EXTENSION', 17: 'MSI', 18: 'PLESSEY'
       };
       let scanTimer = null;
       let scanTimerType = '';
@@ -1309,7 +1316,22 @@
           return false;
         }
         try {
-          zxingReader = new zxing.BrowserMultiFormatReader();
+          let hints = null;
+          if (profile === 'label') {
+            const hintTypes = zxing.DecodeHintType || (window.ZXing && window.ZXing.DecodeHintType);
+            const barcodeFormats = zxing.BarcodeFormat || (window.ZXing && window.ZXing.BarcodeFormat);
+            if (!hintTypes || !barcodeFormats || hintTypes.POSSIBLE_FORMATS === undefined || hintTypes.TRY_HARDER === undefined) {
+              throw new Error('ZXingの形式ヒントAPIが見つかりません');
+            }
+            const formats = ['CODABAR', 'CODE_128', 'ITF', 'CODE_39']
+              .map(name => barcodeFormats[name])
+              .filter(value => value !== undefined);
+            if (!formats.length) throw new Error('伝票用バーコード形式を解決できません');
+            hints = new Map();
+            hints.set(hintTypes.POSSIBLE_FORMATS, formats);
+            hints.set(hintTypes.TRY_HARDER, true);
+          }
+          zxingReader = new zxing.BrowserMultiFormatReader(hints);
           if (typeof zxingReader.decodeFromCanvas !== 'function') {
             throw new Error('decodeFromCanvasが見つかりません');
           }
@@ -1402,7 +1424,7 @@
         const sourceWidth = Math.floor(shortSide * scanConfig.widthFraction);
         const sourceHeight = Math.floor(shortSide * scanConfig.heightFraction);
         if (!sourceWidth || !sourceHeight) return { value: '', decoderPath: 'none', sourceSide: 0, canvasSide: 0 };
-        const targetWidth = Math.min(640, sourceWidth);
+        const targetWidth = labelProfile ? Math.min(COMPLETION_LABEL_CANVAS_WIDTH, sourceWidth) : Math.min(640, sourceWidth);
         const targetHeight = Math.min(640, Math.max(160, Math.round(sourceHeight * targetWidth / sourceWidth)));
         if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
           canvas.width = targetWidth;
@@ -1441,8 +1463,8 @@
             let barcodeFormat = '';
             try {
               barcodeFormat = result && typeof result.getBarcodeFormat === 'function'
-                ? String(result.getBarcodeFormat() || '')
-                : String(result && (result.format || result.barcodeFormat) || '');
+                ? formatZxingBarcodeFormat_(result.getBarcodeFormat())
+                : formatZxingBarcodeFormat_(result && (result.format || result.barcodeFormat) || '');
             } catch (error) {
               barcodeFormat = '';
             }
@@ -1463,6 +1485,15 @@
           sourceSide: sourceWidth,
           canvasSide: targetWidth
         };
+      }
+
+      function formatZxingBarcodeFormat_(value) {
+        if (value === null || value === undefined || value === '') return '';
+        if (typeof value === 'number' || /^\d+$/.test(String(value))) {
+          const numeric = Number(value);
+          return ZXING_BARCODE_FORMAT_NAMES[numeric] || String(value);
+        }
+        return String(value);
       }
 
       function validateOrderCode(rawValue) {
