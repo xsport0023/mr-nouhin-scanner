@@ -30,6 +30,7 @@
     .title { font-size:18px; font-weight:800; letter-spacing:.04em; }
     .subtitle { margin-left:auto; color:#d5d9e8; font-size:12px; }
     .scan-frame { position:absolute; top:50%; left:50%; width:min(72vw,300px); aspect-ratio:1; transform:translate(-50%,-50%); }
+    .scan-frame.band { width:min(76vw,360px); aspect-ratio:2.2; }
     .scan-frame::before, .scan-frame::after, .corner { content:""; position:absolute; width:42px; height:42px; border:4px solid #fff; }
     .scan-frame::before { top:0; left:0; border-right:0; border-bottom:0; border-radius:8px 0 0; }
     .scan-frame::after { top:0; right:0; border-left:0; border-bottom:0; border-radius:0 8px 0 0; }
@@ -151,6 +152,9 @@
         <button id="completion-individual-button" class="choice-button ship" type="button">個別発送</button>
         <button id="completion-single-parcel-button" class="choice-button ship" type="button">まとめ発送</button>
         <button id="completion-diagnostic-button" class="choice-button" type="button" hidden>伝票読取を診断（プレビュー）</button>
+        <label id="completion-diagnostic-carrier-wrap" class="debug-option" hidden>診断する運送会社
+          <select id="completion-diagnostic-carrier"><option value="sagawa">佐川急便（帯ROI）</option><option value="yamato">ヤマト運輸（正方形）</option><option value="clickpost">クリックポスト（正方形）</option></select>
+        </label>
         <button id="completion-back-button" class="choice-button" type="button">モード選択へ戻る</button>
       </div>
     </div>
@@ -270,6 +274,8 @@
       let idToken = '';
       let currentMode = '';
       let completionConsolidation = '';
+      let completionCarrier = '';
+      let completionDiagnosticCarrier = 'sagawa';
       let completionStep = '';
       let completionOrders = [];
       let completionRawTrackingValue = '';
@@ -300,6 +306,11 @@
       const JAPANESE_PREFECTURES = ['北海道','青森県','岩手県','宮城県','秋田県','山形県','福島県','茨城県','栃木県','群馬県','埼玉県','千葉県','東京都','神奈川県','新潟県','富山県','石川県','福井県','山梨県','長野県','岐阜県','静岡県','愛知県','三重県','滋賀県','京都府','大阪府','兵庫県','奈良県','和歌山県','鳥取県','島根県','岡山県','広島県','山口県','徳島県','香川県','愛媛県','高知県','福岡県','佐賀県','長崎県','熊本県','大分県','宮崎県','鹿児島県','沖縄県'];
       const SCAN_INTERVAL_MS = 16;
       const SCAN_ROI_FRACTION = 0.75;
+      const COMPLETION_SCAN_CONFIG = {
+        sagawa: { shape: 'band', widthFraction: 0.75, heightFraction: 0.38, hint: '横長の枠に、読みたい佐川のバーコードを1本収めてください' },
+        yamato: { shape: 'square', widthFraction: 0.75, heightFraction: 0.75, hint: '伝票のQRまたはバーコードを枠に収めてください' },
+        clickpost: { shape: 'square', widthFraction: 0.75, heightFraction: 0.75, hint: '伝票のQRまたはバーコードを枠に収めてください' }
+      };
       let scanTimer = null;
       let scanTimerType = '';
       let decodeInFlight = false;
@@ -995,6 +1006,7 @@
       function showModeSelect() {
         stopCamera();
         currentMode = '';
+        completionCarrier = '';
         completionConsolidation = '';
         completionStep = '';
         showScreen('mode-screen');
@@ -1008,8 +1020,11 @@
         document.getElementById('camera-subtitle').textContent = completion
           ? (completionStep === 'orders' ? '注文書QRを読み取ってください' : '実物伝票を読み取ってください')
           : (shipping ? 'QRを順番にスキャンしてください' : 'QRをかざしてください');
+        const scanConfig = completion && completionStep === 'label' ? completionScanConfig_() : null;
+        if (scanConfig && scanConfig.shape === 'band') scanFrameElement.classList.add('band');
+        else scanFrameElement.classList.remove('band');
         document.getElementById('camera-hint').textContent = completion
-          ? (completionStep === 'orders' ? '注文書QRを読み取ります' : '伝票のQRまたはバーコードを読み取ります')
+          ? (completionStep === 'orders' ? '注文書QRを読み取ります' : (scanConfig ? scanConfig.hint : '伝票のQRまたはバーコードを読み取ります'))
           : (shipping ? 'スキャンすると一覧に追加されます' : 'スキャンすると自動で印刷タグを付けます');
         document.getElementById('print-controls').hidden = !printing;
         document.getElementById('ship-controls').hidden = !shipping;
@@ -1039,12 +1054,14 @@
         stopCamera();
         currentMode = '';
         document.getElementById('completion-diagnostic-button').hidden = !isPreviewDiagnostic_();
+        document.getElementById('completion-diagnostic-carrier-wrap').hidden = !isPreviewDiagnostic_();
         showScreen('completion-mode-screen');
       }
 
       function startCompletionMode(consolidation) {
         currentMode = 'shipping-complete';
         completionConsolidation = consolidation;
+        completionCarrier = '';
         completionStep = 'orders';
         completionOrders = [];
         completionRawTrackingValue = '';
@@ -1070,6 +1087,8 @@
       function startCompletionDiagnostic_() {
         currentMode = 'shipping-complete';
         completionConsolidation = 'individual';
+        completionDiagnosticCarrier = document.getElementById('completion-diagnostic-carrier').value || 'sagawa';
+        completionCarrier = completionDiagnosticCarrier;
         completionStep = 'label';
         completionOrders = [];
         completionLabelValues = [];
@@ -1080,6 +1099,19 @@
         requestInFlight = false;
         updateCameraMode();
         startCamera().then(maybeShowInstallHint);
+      }
+
+      function normalizeCompletionCarrier_(value) {
+        const raw = String(value || '').toLowerCase();
+        if (raw.includes('sagawa') || raw.includes('佐川')) return 'sagawa';
+        if (raw.includes('yamato') || raw.includes('ヤマト')) return 'yamato';
+        if (raw.includes('clickpost') || raw.includes('クリック')) return 'clickpost';
+        return '';
+      }
+
+      function completionScanConfig_() {
+        const carrier = isPreviewDiagnostic_() ? completionDiagnosticCarrier : normalizeCompletionCarrier_(completionCarrier);
+        return COMPLETION_SCAN_CONFIG[carrier] || COMPLETION_SCAN_CONFIG.yamato;
       }
 
       async function startShippingMode() {
@@ -1364,17 +1396,22 @@
       }
 
       async function decodeFrame() {
-        const sourceSide = Math.floor(Math.min(video.videoWidth, video.videoHeight) * SCAN_ROI_FRACTION);
-        if (!sourceSide) return { value: '', decoderPath: 'none', sourceSide: 0, canvasSide: 0 };
-        const targetSide = Math.min(640, sourceSide);
-        if (canvasSide !== targetSide) {
-          canvas.width = targetSide;
-          canvas.height = targetSide;
-          canvasSide = targetSide;
+        const labelProfile = scanProfile_() === 'label';
+        const scanConfig = labelProfile ? completionScanConfig_() : { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION, shape: 'square' };
+        const shortSide = Math.min(video.videoWidth, video.videoHeight);
+        const sourceWidth = Math.floor(shortSide * scanConfig.widthFraction);
+        const sourceHeight = Math.floor(shortSide * scanConfig.heightFraction);
+        if (!sourceWidth || !sourceHeight) return { value: '', decoderPath: 'none', sourceSide: 0, canvasSide: 0 };
+        const targetWidth = Math.min(640, sourceWidth);
+        const targetHeight = Math.min(640, Math.max(160, Math.round(sourceHeight * targetWidth / sourceWidth)));
+        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          canvasSide = targetWidth;
         }
-        const sourceX = Math.floor((video.videoWidth - sourceSide) / 2);
-        const sourceY = Math.floor((video.videoHeight - sourceSide) / 2);
-        context.drawImage(video, sourceX, sourceY, sourceSide, sourceSide, 0, 0, targetSide, targetSide);
+        const sourceX = Math.floor((video.videoWidth - sourceWidth) / 2);
+        const sourceY = Math.floor((video.videoHeight - sourceHeight) / 2);
+        context.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, targetWidth, targetHeight);
 
         const profile = scanProfile_();
         if (profile === 'qr' && barcodeDetector) {
@@ -1384,8 +1421,8 @@
               value: detected.length && detected[0].rawValue ? detected[0].rawValue : '',
               decoderPath: 'BarcodeDetector',
               barcodeFormat: detected.length && detected[0].format ? detected[0].format : '',
-              sourceSide,
-              canvasSide: targetSide
+              sourceSide: sourceWidth,
+              canvasSide: targetWidth
             };
           } catch (error) {
             barcodeDetector = null;
@@ -1394,7 +1431,7 @@
         }
 
         if (profile === 'label' && !zxingReader) {
-          return { value: '', decoderPath: 'ZXing unavailable', error: 'ZXING_UNAVAILABLE', sourceSide, canvasSide: targetSide };
+          return { value: '', decoderPath: 'ZXing unavailable', error: 'ZXING_UNAVAILABLE', sourceSide: sourceWidth, canvasSide: targetWidth };
         }
 
         if (profile === 'label' && zxingReader) {
@@ -1409,22 +1446,22 @@
             } catch (error) {
               barcodeFormat = '';
             }
-            return { value: value || '', decoderPath: 'ZXing', barcodeFormat, sourceSide, canvasSide: targetSide };
+            return { value: value || '', decoderPath: 'ZXing', barcodeFormat, sourceSide: sourceWidth, canvasSide: targetWidth };
           } catch (error) {
             // NotFoundExceptionの型名はUMD minify後に安定しないため、
             // フレーム内にコードが無い通常系を含め、ここでは「値なし」として扱う。
             // API不在・グローバル不在は初期化時に検出して手入力へ誘導する。
-            return { value: '', decoderPath: 'ZXing', sourceSide, canvasSide: targetSide };
+            return { value: '', decoderPath: 'ZXing', sourceSide: sourceWidth, canvasSide: targetWidth };
           }
         }
 
-        const image = context.getImageData(0, 0, canvasSide, canvasSide);
+        const image = context.getImageData(0, 0, targetWidth, targetHeight);
         const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'dontInvert' });
         return {
           value: code && code.data ? code.data : '',
           decoderPath: 'jsQR',
-          sourceSide,
-          canvasSide: targetSide
+          sourceSide: sourceWidth,
+          canvasSide: targetWidth
         };
       }
 
@@ -1560,6 +1597,7 @@
             return;
           }
           completionSessionShipmentId = data.shipment_id || completionSessionShipmentId;
+          completionCarrier = data.carrier || data.carrier_label || completionCarrier;
           completionExpectedOrderCount = Number(data.expected_order_count) || completionExpectedOrderCount || 1;
           const scannedId = String(data.order_id || orderId);
           if (!completionOrders.some(item => item.orderId === scannedId)) {
