@@ -174,6 +174,7 @@
       </div>
       <div id="completion-controls" class="completion-controls" hidden>
         <div class="completion-summary"><span id="completion-step-label">注文書QR</span><strong id="completion-count">0件</strong></div>
+        <div id="completion-latest-reading" class="completion-latest-reading" aria-live="polite">直近の読取: 未読</div>
         <div id="completion-list" class="completion-list"></div>
         <div id="completion-candidates" class="completion-list" hidden></div>
         <button id="completion-close-orders" class="completion-action" type="button" hidden>注文スキャンを締める</button>
@@ -274,6 +275,8 @@
       let completionRawTrackingValue = '';
       let completionLabelValues = [];
       let completionLabelReadings = [];
+      let completionProbeInFlight = false;
+      let completionProbeNoCandidateCount = 0;
       let completionSessionShipmentId = '';
       let completionExpectedOrderCount = 0;
       let completionPendingOrderId = '';
@@ -1047,6 +1050,7 @@
         completionRawTrackingValue = '';
         completionLabelValues = [];
         completionLabelReadings = [];
+        completionProbeNoCandidateCount = 0;
         completionSessionShipmentId = '';
         completionExpectedOrderCount = 0;
         completionPendingOrderId = '';
@@ -1070,6 +1074,7 @@
         completionOrders = [];
         completionLabelValues = [];
         completionLabelReadings = [];
+        completionProbeNoCandidateCount = 0;
         completionSessionShipmentId = '';
         completionRawTrackingValue = '';
         requestInFlight = false;
@@ -1349,7 +1354,7 @@
               : '伝票読取でエラーが発生しました。手入力を使用してください。';
             showToast(message, 'error');
           }
-          if (generation === scanGeneration && result.value) handleScanValue_(result.value, result.decoderPath);
+          if (generation === scanGeneration && result.value) handleScanValue_(result.value, result.decoderPath, result.barcodeFormat);
         } finally {
           if (generation === scanGeneration) {
             decodeInFlight = false;
@@ -1378,6 +1383,7 @@
             return {
               value: detected.length && detected[0].rawValue ? detected[0].rawValue : '',
               decoderPath: 'BarcodeDetector',
+              barcodeFormat: detected.length && detected[0].format ? detected[0].format : '',
               sourceSide,
               canvasSide: targetSide
             };
@@ -1395,7 +1401,15 @@
           try {
             const result = zxingReader.decodeFromCanvas(canvas);
             const value = result && typeof result.getText === 'function' ? result.getText() : (result && (result.text || result.rawValue) || '');
-            return { value: value || '', decoderPath: 'ZXing', sourceSide, canvasSide: targetSide };
+            let barcodeFormat = '';
+            try {
+              barcodeFormat = result && typeof result.getBarcodeFormat === 'function'
+                ? String(result.getBarcodeFormat() || '')
+                : String(result && (result.format || result.barcodeFormat) || '');
+            } catch (error) {
+              barcodeFormat = '';
+            }
+            return { value: value || '', decoderPath: 'ZXing', barcodeFormat, sourceSide, canvasSide: targetSide };
           } catch (error) {
             // NotFoundExceptionの型名はUMD minify後に安定しないため、
             // フレーム内にコードが無い通常系を含め、ここでは「値なし」として扱う。
@@ -1503,10 +1517,10 @@
         else if (currentMode === 'shipping-complete' && completionStep === 'orders') acceptCompletionOrder_(validation.orderId);
       }
 
-      function handleScanValue_(rawValue) {
-        const decoderPath = arguments.length > 1 ? arguments[1] : 'unknown';
+      function handleScanValue_(rawValue, decoderPath, barcodeFormat) {
+        decoderPath = decoderPath || 'unknown';
         if (currentMode === 'shipping-complete' && completionStep === 'label') {
-          acceptCompletionLabel_(String(rawValue || '').trim(), decoderPath);
+          acceptCompletionLabel_(String(rawValue || '').trim(), decoderPath, barcodeFormat);
           return;
         }
         handleQr(rawValue);
@@ -1607,22 +1621,66 @@
         scheduleScan();
       }
 
-      function acceptCompletionLabel_(rawValue, decoderPath) {
+      function acceptCompletionLabel_(rawValue, decoderPath, barcodeFormat) {
         const value = String(rawValue || '').trim();
         if (!value || requestInFlight || completionLabelValues.includes(value)) return;
         completionLabelValues.push(value);
-        completionLabelReadings.push({ value, decoderPath: decoderPath || 'unknown' });
+        completionLabelReadings.push({
+          sequence: completionLabelReadings.length + 1,
+          value,
+          decoderPath: decoderPath || 'unknown',
+          barcodeFormat: barcodeFormat || ''
+        });
         renderCompletionControls_();
         renderCompletionRawValues_();
+        if (!isPreviewDiagnostic_()) probeCompletionLabel_(value);
         showToast('伝票の値を受け付けました。続けて他のコードも読み取れます。', 'success');
+      }
+
+      function formatCompletionReading_(reading) {
+        if (!reading) return '未読';
+        const format = reading.barcodeFormat ? `/${reading.barcodeFormat}` : '';
+        return `#${reading.sequence} ${reading.value} [${reading.decoderPath}${format}]`;
       }
 
       function renderCompletionRawValues_() {
         const text = completionLabelReadings.length
-          ? completionLabelReadings.map(item => `${item.value} [${item.decoderPath}]`).join(' / ')
+          ? completionLabelReadings.map(formatCompletionReading_).join(' / ')
           : '未読';
         const result = document.getElementById('completion-result-raw-values');
         if (result) result.textContent = text;
+      }
+
+      async function probeCompletionLabel_(value) {
+        if (completionProbeInFlight || !value) return;
+        completionProbeInFlight = true;
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_done_probe',
+            id_token: idToken,
+            label_values: [value]
+          }) });
+          const result = await fetchJsonWithPerformance('ship_done_probe', body, null);
+          const data = result.data || {};
+          if (data.status === 'OK') {
+            completionProbeNoCandidateCount = 0;
+            completionRawTrackingValue = data.tracking_number || '';
+            const latest = document.getElementById('completion-latest-reading');
+            if (latest) latest.textContent = `追跡番号候補: ${data.tracking_display || data.tracking_number || '不明'}（probe OK）`;
+            showToast(`追跡番号候補: ${data.tracking_display || data.tracking_number || '不明'}`, 'success');
+          } else if (data.status === 'NO_CANDIDATE') {
+            completionProbeNoCandidateCount += 1;
+            if (completionProbeNoCandidateCount >= 5) {
+              showToast('追跡番号を読み取れていません。伝票を合わせるか手入力してください。', 'warning');
+            }
+          } else if (data.status === 'MULTIPLE_CANDIDATES') {
+            showToast('追跡番号候補が複数あります。伝票を確認してください。', 'warning');
+          }
+        } catch (error) {
+          // 未反映環境では ship_done_probe が存在しないため、読取自体は継続する。
+        } finally {
+          completionProbeInFlight = false;
+        }
       }
 
       async function submitCompletionPlan_() {
@@ -1680,6 +1738,8 @@
         const close = document.getElementById('completion-close-orders');
         const closeLabel = document.getElementById('completion-close-label');
         if (!label || !count || !list || !close || !closeLabel) return;
+        const latest = document.getElementById('completion-latest-reading');
+        if (latest) latest.textContent = `直近の読取: ${formatCompletionReading_(completionLabelReadings[completionLabelReadings.length - 1])}`;
         label.textContent = completionStep === 'label'
           ? (completionConsolidation === 'single_parcel' ? 'まとめ発送 / 伝票' : '個別発送 / 伝票')
           : (completionConsolidation === 'single_parcel' ? 'まとめ発送 / 注文書QR' : '個別発送 / 注文書QR');
@@ -1701,7 +1761,7 @@
             const row = document.createElement('div');
             row.className = 'completion-item';
             const reading = completionLabelReadings.find(item => item.value === value);
-            row.textContent = `${value} [${reading ? reading.decoderPath : 'unknown'}]`;
+            row.textContent = formatCompletionReading_(reading || { sequence: 0, value, decoderPath: 'unknown' });
             list.appendChild(row);
           });
         }
@@ -2187,7 +2247,7 @@
         const value = input.value.trim();
         if (!value) return;
         input.value = '';
-        handleScanValue_(value, 'manual');
+        handleScanValue_(value, 'manual', 'MANUAL');
       });
       document.getElementById('manual-scan-input').addEventListener('keydown', event => {
         if (event.key === 'Enter') document.getElementById('manual-scan-submit').click();
