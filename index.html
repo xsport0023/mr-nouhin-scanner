@@ -93,10 +93,6 @@
     .completion-list { max-height:130px; overflow:auto; margin-top:8px; display:flex; flex-direction:column; gap:5px; text-align:left; }
     .completion-item { padding:7px 9px; border-radius:8px; background:#1e3a5f; color:#eff6ff; font-size:12px; }
     .completion-action { margin-top:10px; padding:10px; background:#3b82f6; color:#eff6ff; }
-    .manual-scan-controls { position:absolute; left:18px; right:18px; bottom:calc(112px + env(safe-area-inset-bottom)); z-index:13; display:flex; gap:8px; align-items:center; padding:10px; border:1px solid #52617f; border-radius:12px; background:#090b12e8; pointer-events:auto; }
-    .manual-scan-controls[hidden] { display:none; }
-    .manual-scan-controls input { min-width:0; flex:1; padding:10px; border:1px solid #7180a5; border-radius:8px; background:#0e1320; color:#fff; font:inherit; }
-    .manual-scan-controls button { width:auto; margin:0; padding:10px 12px; font-size:13px; }
     .completion-result { margin-top:18px; padding:16px; border:1px solid #60a5fa; border-radius:12px; background:#102a4a; text-align:left; }
     .completion-tracking-number { margin:8px 0 14px; color:#fff; font:700 28px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; letter-spacing:.04em; word-break:break-all; }
     .completion-result-row { display:flex; justify-content:space-between; gap:12px; padding:5px 0; color:#dbeafe; font-size:13px; }
@@ -184,11 +180,6 @@
         <div id="completion-candidates" class="completion-list" hidden></div>
         <button id="completion-close-orders" class="completion-action" type="button" hidden>注文スキャンを締める</button>
         <button id="completion-close-label" class="completion-action" type="button" hidden>伝票スキャンを締める</button>
-      </div>
-      <div id="manual-scan-controls" class="manual-scan-controls" hidden>
-        <input id="manual-scan-input" inputmode="text" autocomplete="off" placeholder="読み取る値を入力">
-        <button id="manual-scan-submit" type="button">入力</button>
-        <button id="manual-scan-cancel" type="button">閉じる</button>
       </div>
     </div>
   </section>
@@ -1054,7 +1045,6 @@
         document.getElementById('print-controls').hidden = !printing;
         document.getElementById('ship-controls').hidden = !shipping;
         document.getElementById('completion-controls').hidden = !completion;
-        document.getElementById('manual-scan-controls').hidden = !(printing || shipping || completion);
         if (printing) renderPrintQueue();
         if (shipping) {
           document.getElementById('carrier-label').textContent = '発送準備';
@@ -1430,8 +1420,8 @@
           if (result.error) {
             scanning = false;
             const message = result.error === 'ZXING_UNAVAILABLE'
-              ? '伝票読取ライブラリを読み込めません。下の手入力を使用してください。'
-              : '伝票読取でエラーが発生しました。手入力を使用してください。';
+              ? '伝票読取ライブラリを読み込めません。画面を開き直してください。'
+              : '伝票読取でエラーが発生しました。画面を開き直してください。';
             showToast(message, 'error');
           }
           if (generation === scanGeneration && result.value) handleScanValue_(result.value, result.decoderPath, result.barcodeFormat);
@@ -1502,7 +1492,7 @@
           } catch (error) {
             // NotFoundExceptionの型名はUMD minify後に安定しないため、
             // フレーム内にコードが無い通常系を含め、ここでは「値なし」として扱う。
-            // API不在・グローバル不在は初期化時に検出して手入力へ誘導する。
+            // API不在・グローバル不在は初期化時に検出して状態を表示する。
             return { value: '', decoderPath: 'ZXing', sourceSide: sourceWidth, canvasSide: targetWidth };
           }
         }
@@ -1770,7 +1760,7 @@
           } else if (data.status === 'NO_CANDIDATE') {
             completionProbeNoCandidateCount += 1;
             if (completionProbeNoCandidateCount >= 5) {
-              showToast('追跡番号を読み取れていません。伝票を合わせるか手入力してください。', 'warning');
+              showToast('追跡番号を読み取れていません。伝票の汚れや角度を確認してください。', 'warning');
             }
           } else if (data.status === 'MULTIPLE_CANDIDATES') {
             showToast('追跡番号候補が複数あります。伝票を確認してください。', 'warning');
@@ -2340,20 +2330,6 @@
         if (!completionRawTrackingValue) return;
         completionConfirmedTracking = completionRawTrackingValue;
         showToast('確認値を保持しました。P5承認後に実行します。', 'success');
-      });
-      document.getElementById('manual-scan-submit').addEventListener('click', () => {
-        const input = document.getElementById('manual-scan-input');
-        const value = input.value.trim();
-        if (!value) return;
-        input.value = '';
-        handleScanValue_(value, 'manual', 'MANUAL');
-      });
-      document.getElementById('manual-scan-input').addEventListener('keydown', event => {
-        if (event.key === 'Enter') document.getElementById('manual-scan-submit').click();
-      });
-      document.getElementById('manual-scan-cancel').addEventListener('click', () => {
-        document.getElementById('manual-scan-input').value = '';
-        document.getElementById('manual-scan-input').blur();
       });
       document.getElementById('carrier-confirmation-back').addEventListener('click', () => showConsolidationScreen());
       document.getElementById('carrier-confirmation-submit').addEventListener('click', confirmCarrierSelection);
