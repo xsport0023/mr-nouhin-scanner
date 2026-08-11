@@ -130,7 +130,7 @@
       <div class="choice-list">
         <button id="print-mode-button" class="choice-button" type="button">印刷タグ付け</button>
         <button id="ship-mode-button" class="choice-button ship" type="button">発送準備</button>
-        <button id="completion-mode-button" class="choice-button ship" type="button">発送完了</button>
+        <button id="completion-mode-button" class="choice-button ship" type="button">納品(お渡し・発送)</button>
       </div>
       <label class="debug-option"><input id="perf-toggle" type="checkbox">速度計測を表示</label>
     </div>
@@ -150,7 +150,7 @@
         <button id="completion-single-parcel-button" class="choice-button ship" type="button">まとめ発送</button>
         <button id="completion-diagnostic-button" class="choice-button" type="button" hidden>伝票読取を診断（プレビュー）</button>
         <label id="completion-diagnostic-carrier-wrap" class="debug-option" hidden>診断する運送会社
-          <select id="completion-diagnostic-carrier"><option value="sagawa">佐川急便（帯ROI）</option><option value="yamato">ヤマト運輸（正方形）</option><option value="clickpost">クリックポスト（正方形）</option></select>
+          <select id="completion-diagnostic-carrier"><option value="sagawa">佐川急便（帯ROI）</option><option value="yamato">ヤマト運輸（帯ROI）</option><option value="clickpost">クリックポスト（帯ROI）</option></select>
         </label>
         <button id="completion-back-button" class="choice-button" type="button">モード選択へ戻る</button>
       </div>
@@ -1090,6 +1090,7 @@
         completionPlanId = '';
         completionNotify = null;
         completionCardsMissing = [];
+        resetCompletionConfirmButton_();
         initializeZxingReader_('label').then(() => renderPerformancePanel());
         updateCameraMode();
         startCamera().then(maybeShowInstallHint);
@@ -1819,6 +1820,91 @@
         }
       }
 
+      /**
+       * P5: 作成済み計画を、作業者が実物伝票と照合した後にだけ実行する。
+       * この画面のボタン操作自体が目視照合のゲートであり、値は計画時に確定した
+       * 読取結果だけを渡す。手入力値を外部処理へ渡す経路は持たない。
+       */
+      async function executeCompletionPlan_() {
+        if (requestInFlight) {
+          showToast('発送確定を処理中です。完了するまでお待ちください。', 'warning');
+          return;
+        }
+        if (!completionPlanId || !completionRawTrackingValue) {
+          showToast('処理計画または追跡番号がありません。最初から読み取り直してください。', 'warning');
+          return;
+        }
+        if (isPreviewDiagnostic_()) {
+          showToast('プレビュー診断では発送確定を実行できません。', 'warning');
+          return;
+        }
+
+        const confirm = document.getElementById('completion-confirm-button');
+        requestInFlight = true;
+        completionConfirmedTracking = completionRawTrackingValue;
+        confirm.disabled = true;
+        confirm.textContent = '発送確定中…';
+
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_done_execute',
+            id_token: idToken,
+            plan_id: completionPlanId,
+            confirmed_tracking: completionConfirmedTracking
+          }) });
+          const result = await fetchJsonWithPerformance('ship_done_execute', body, null);
+          const data = result.data;
+          if (handleAuthError(data)) {
+            resetCompletionConfirmButton_();
+            return;
+          }
+
+          if (!data.ok) {
+            renderCompletionExecutionResult_({
+              complete: false,
+              error: data.error || '発送確定を実行できませんでした。'
+            });
+            return;
+          }
+          renderCompletionExecutionResult_(data);
+        } catch (error) {
+          renderCompletionExecutionResult_({
+            complete: false,
+            error: '発送確定の通信に失敗しました。再実行せず、担当者へ確認してください。'
+          });
+        } finally {
+          requestInFlight = false;
+        }
+      }
+
+      function renderCompletionExecutionResult_(result) {
+        const confirm = document.getElementById('completion-confirm-button');
+        const notice = document.getElementById('completion-result-notice');
+        confirm.disabled = true;
+
+        if (result.complete === true) {
+          confirm.textContent = '発送確定済み';
+          notice.textContent = result.notify === false
+            ? '発送確定を完了しました。まとめ発送のため顧客通知は送信していません。'
+            : '発送確定を完了しました。追跡情報の反映と顧客通知を完了しました。';
+          showToast('発送確定を完了しました。', 'success');
+          return;
+        }
+
+        confirm.textContent = '要確認（再実行不可）';
+        const incomplete = Array.isArray(result.incomplete) ? result.incomplete : [];
+        const details = incomplete.map(item => `注文 ${item.order_id}（第${item.phase}相: ${item.status}）`).join(' / ');
+        notice.textContent = result.error
+          || `発送確定が完了していない明細があります。再実行せず、担当者へ確認してください。${details ? ` ${details}` : ''}`;
+        showToast('発送確定は完了していません。担当者へ確認してください。', 'error');
+      }
+
+      function resetCompletionConfirmButton_() {
+        const confirm = document.getElementById('completion-confirm-button');
+        confirm.disabled = true;
+        confirm.textContent = '印字と一致・発送確定';
+      }
+
       function renderCompletionControls_() {
         const label = document.getElementById('completion-step-label');
         const count = document.getElementById('completion-count');
@@ -1871,6 +1957,7 @@
         const confirm = document.getElementById('completion-confirm-button');
         const ready = result.ok === true || result.readyForConfirmation === true;
         confirm.disabled = !ready;
+        confirm.textContent = '印字と一致・発送確定';
         document.getElementById('completion-result-notice').textContent = ready
           ? (result.notify === false ? '顧客通知なし。伝票の印字と一致することを確認してください。' : '伝票の印字と一致することを確認してから発送確定してください。')
           : (result.error || 'P3/P4の照合結果を受け取るまで発送確定はできません。');
@@ -2326,11 +2413,7 @@
         requestInFlight = false;
         startCamera();
       });
-      document.getElementById('completion-confirm-button').addEventListener('click', () => {
-        if (!completionRawTrackingValue) return;
-        completionConfirmedTracking = completionRawTrackingValue;
-        showToast('確認値を保持しました。P5承認後に実行します。', 'success');
-      });
+      document.getElementById('completion-confirm-button').addEventListener('click', executeCompletionPlan_);
       document.getElementById('carrier-confirmation-back').addEventListener('click', () => showConsolidationScreen());
       document.getElementById('carrier-confirmation-submit').addEventListener('click', confirmCarrierSelection);
       document.getElementById('shipping-issues-back').addEventListener('click', () => {
