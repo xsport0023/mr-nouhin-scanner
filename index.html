@@ -12,7 +12,9 @@
   <meta name="apple-mobile-web-app-title" content="納品ちゃん">
   <meta name="theme-color" content="#090b12">
   <title>印刷タグ付けスキャナ</title>
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.23.0/umd/index.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.2.1/umd/zxing-browser.min.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
     :root { --mode-color:#e879f9; --bg:#090b12; --surface:#171b28; --text:#f5f7ff; --muted:#a6aec4; --danger:#ff6262; --ok:#35d58a; --warn:#f5b84b; }
@@ -29,6 +31,7 @@
     .title { font-size:18px; font-weight:800; letter-spacing:.04em; }
     .subtitle { margin-left:auto; color:#d5d9e8; font-size:12px; }
     .scan-frame { position:absolute; top:50%; left:50%; width:min(72vw,300px); aspect-ratio:1; transform:translate(-50%,-50%); }
+    .scan-frame.band { width:min(82vw,390px); aspect-ratio:3.5; }
     .scan-frame::before, .scan-frame::after, .corner { content:""; position:absolute; width:42px; height:42px; border:4px solid #fff; }
     .scan-frame::before { top:0; left:0; border-right:0; border-bottom:0; border-radius:8px 0 0; }
     .scan-frame::after { top:0; right:0; border-left:0; border-bottom:0; border-radius:0 8px 0 0; }
@@ -43,7 +46,7 @@
     .hint { position:absolute; bottom:calc(36px + env(safe-area-inset-bottom)); padding:10px 18px; border-radius:999px; background:#0009; color:#fff; font-size:14px; }
     #loading-screen, #error-screen, #forbidden-screen { padding:28px; text-align:center; background:var(--bg); }
     #signin-screen { padding:28px; text-align:center; background:var(--bg); }
-    #mode-screen, #carrier-screen, #team-destination-screen, #carrier-confirmation-screen, #shipping-issues-screen, #complete-screen { padding:28px; text-align:center; background:var(--bg); }
+    #mode-screen, #carrier-screen, #completion-mode-screen, #team-destination-screen, #carrier-confirmation-screen, #shipping-issues-screen, #complete-screen, #completion-result-screen { padding:28px; text-align:center; background:var(--bg); }
     .card { width:min(100%,420px); margin:auto; padding:28px 22px; border:1px solid #2b3248; border-radius:20px; background:var(--surface); }
     h1 { margin:0 0 12px; font-size:22px; } p { margin:8px 0; color:var(--muted); line-height:1.7; white-space:pre-wrap; }
     .spinner { width:42px; height:42px; margin:0 auto 18px; border:4px solid #343b52; border-top-color:var(--mode-color); border-radius:50%; animation:spin .8s linear infinite; }
@@ -84,6 +87,20 @@
     .ship-item span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .ship-remove { flex:0 0 auto; width:28px; margin:0; padding:4px; border:1px solid #99f6e4; background:transparent; color:#ccfbf1; font-size:16px; line-height:1; }
     .ship-finalize { margin-top:10px; padding:10px; background:#14b8a6; color:#042f2e; }
+    .completion-controls { position:absolute; left:12px; right:12px; bottom:calc(16px + env(safe-area-inset-bottom)); z-index:12; padding:12px; border:1px solid #60a5fa88; border-radius:16px; background:#102a4aee; pointer-events:auto; text-align:left; }
+    .completion-summary { display:flex; justify-content:space-between; align-items:center; gap:10px; color:#dbeafe; font-size:13px; }
+    .completion-summary strong { font-size:18px; }
+    .completion-list { max-height:130px; overflow:auto; margin-top:8px; display:flex; flex-direction:column; gap:5px; text-align:left; }
+    .completion-item { padding:7px 9px; border-radius:8px; background:#1e3a5f; color:#eff6ff; font-size:12px; }
+    .completion-action { margin-top:10px; padding:10px; background:#3b82f6; color:#eff6ff; }
+    .manual-scan-controls { position:absolute; left:18px; right:18px; bottom:calc(112px + env(safe-area-inset-bottom)); z-index:13; display:flex; gap:8px; align-items:center; padding:10px; border:1px solid #52617f; border-radius:12px; background:#090b12e8; pointer-events:auto; }
+    .manual-scan-controls[hidden] { display:none; }
+    .manual-scan-controls input { min-width:0; flex:1; padding:10px; border:1px solid #7180a5; border-radius:8px; background:#0e1320; color:#fff; font:inherit; }
+    .manual-scan-controls button { width:auto; margin:0; padding:10px 12px; font-size:13px; }
+    .completion-result { margin-top:18px; padding:16px; border:1px solid #60a5fa; border-radius:12px; background:#102a4a; text-align:left; }
+    .completion-tracking-number { margin:8px 0 14px; color:#fff; font:700 28px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; letter-spacing:.04em; word-break:break-all; }
+    .completion-result-row { display:flex; justify-content:space-between; gap:12px; padding:5px 0; color:#dbeafe; font-size:13px; }
+    .completion-result-row strong { color:#fff; text-align:right; word-break:break-word; }
     .carrier-confirmation-list { display:flex; flex-direction:column; gap:9px; margin-top:16px; text-align:left; }
     .carrier-confirmation-row { display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid #2b8a7d; border-radius:10px; background:#0f3b38; }
     .carrier-confirmation-label { flex:1; min-width:0; color:#d5fff7; font-size:13px; line-height:1.45; }
@@ -117,6 +134,7 @@
       <div class="choice-list">
         <button id="print-mode-button" class="choice-button" type="button">印刷タグ付け</button>
         <button id="ship-mode-button" class="choice-button ship" type="button">発送準備</button>
+        <button id="completion-mode-button" class="choice-button ship" type="button">発送完了</button>
       </div>
       <label class="debug-option"><input id="perf-toggle" type="checkbox">速度計測を表示</label>
     </div>
@@ -126,6 +144,19 @@
       <div class="choice-list">
         <button id="sagawa-button" class="choice-button ship" type="button">発送準備を開始</button>
         <button id="carrier-back-button" class="choice-button" type="button">モード選択へ戻る</button>
+      </div>
+    </div>
+  </section>
+  <section id="completion-mode-screen" class="screen" aria-label="発送完了方法選択">
+    <div class="card"><h1>発送完了</h1><p>発送方法を選び、注文書QRと実物伝票を対応させます。</p>
+      <div class="choice-list">
+        <button id="completion-individual-button" class="choice-button ship" type="button">個別発送</button>
+        <button id="completion-single-parcel-button" class="choice-button ship" type="button">まとめ発送</button>
+        <button id="completion-diagnostic-button" class="choice-button" type="button" hidden>伝票読取を診断（プレビュー）</button>
+        <label id="completion-diagnostic-carrier-wrap" class="debug-option" hidden>診断する運送会社
+          <select id="completion-diagnostic-carrier"><option value="sagawa">佐川急便（帯ROI）</option><option value="yamato">ヤマト運輸（正方形）</option><option value="clickpost">クリックポスト（正方形）</option></select>
+        </label>
+        <button id="completion-back-button" class="choice-button" type="button">モード選択へ戻る</button>
       </div>
     </div>
   </section>
@@ -145,6 +176,19 @@
         <div class="ship-summary"><span><span id="carrier-label">発送準備</span> / スキャン済み</span><strong id="ship-count">0件</strong></div>
         <div id="ship-list" class="ship-list"></div>
         <button id="ship-finalize-button" class="ship-finalize" type="button">ここで締める</button>
+      </div>
+      <div id="completion-controls" class="completion-controls" hidden>
+        <div class="completion-summary"><span id="completion-step-label">注文書QR</span><strong id="completion-count">0件</strong></div>
+        <div id="completion-latest-reading" class="completion-latest-reading" aria-live="polite">直近の読取: 未読</div>
+        <div id="completion-list" class="completion-list"></div>
+        <div id="completion-candidates" class="completion-list" hidden></div>
+        <button id="completion-close-orders" class="completion-action" type="button" hidden>注文スキャンを締める</button>
+        <button id="completion-close-label" class="completion-action" type="button" hidden>伝票スキャンを締める</button>
+      </div>
+      <div id="manual-scan-controls" class="manual-scan-controls" hidden>
+        <input id="manual-scan-input" inputmode="text" autocomplete="off" placeholder="読み取る値を入力">
+        <button id="manual-scan-submit" type="button">入力</button>
+        <button id="manual-scan-cancel" type="button">閉じる</button>
       </div>
     </div>
   </section>
@@ -187,6 +231,20 @@
   <section id="complete-screen" class="screen" aria-label="発送準備完了">
     <div class="card"><h1>発送準備完了</h1><p id="complete-message"></p><div id="shipping-artifact-breakdown" class="artifact-breakdown"></div><div id="shipping-warnings" class="warning-list"></div><button id="complete-next-button" class="choice-button ship" type="button">発送準備を続ける</button></div>
   </section>
+  <section id="completion-result-screen" class="screen" aria-label="発送完了確認">
+    <div class="card"><h1>発送完了の確認</h1><p>実物伝票の印字と、画面の追跡番号を照合してください。</p>
+      <div class="completion-result">
+        <div id="completion-tracking-number" class="completion-tracking-number"></div>
+        <div class="completion-result-row"><span>読取生値</span><strong id="completion-result-raw-values">未読</strong></div>
+        <div class="completion-result-row"><span>注文番号</span><strong id="completion-result-orders"></strong></div>
+        <div class="completion-result-row"><span>発送ID</span><strong id="completion-result-shipment">P4照合待ち</strong></div>
+        <div class="completion-result-row"><span>運送会社</span><strong id="completion-result-carrier">P4照合待ち</strong></div>
+        <div class="completion-result-row"><span>Trelloカード</span><strong id="completion-result-card">P4照合待ち</strong></div>
+      </div>
+      <p id="completion-result-notice">P3/P4の照合結果を受け取るまで発送確定はできません。</p>
+      <div class="address-actions"><button id="completion-result-cancel" class="choice-button" type="button">戻る</button><button id="completion-confirm-button" class="choice-button ship" type="button" disabled>印字と一致・発送確定</button></div>
+    </div>
+  </section>
   <canvas id="canvas"></canvas><div id="toast" role="status" aria-live="polite"></div>
   <aside id="install-hint" aria-label="ホーム画面への追加案内">
     <p>共有・メニューボタンから「ホーム画面に追加」を選ぶと、次回からすぐ起動できます。</p>
@@ -216,6 +274,23 @@
       let toastTimer = null;
       let idToken = '';
       let currentMode = '';
+      let completionConsolidation = '';
+      let completionCarrier = '';
+      let completionDiagnosticCarrier = 'sagawa';
+      let completionStep = '';
+      let completionOrders = [];
+      let completionRawTrackingValue = '';
+      let completionLabelValues = [];
+      let completionLabelReadings = [];
+      let completionProbeInFlight = false;
+      let completionProbeNoCandidateCount = 0;
+      let completionSessionShipmentId = '';
+      let completionExpectedOrderCount = 0;
+      let completionPendingOrderId = '';
+      let completionConfirmedTracking = '';
+      let completionPlanId = '';
+      let completionNotify = null;
+      let completionCardsMissing = [];
       let shippingItems = [];
       let shippingContext = null;
       let pendingFinalize = null;
@@ -232,17 +307,35 @@
       const JAPANESE_PREFECTURES = ['北海道','青森県','岩手県','宮城県','秋田県','山形県','福島県','茨城県','栃木県','群馬県','埼玉県','千葉県','東京都','神奈川県','新潟県','富山県','石川県','福井県','山梨県','長野県','岐阜県','静岡県','愛知県','三重県','滋賀県','京都府','大阪府','兵庫県','奈良県','和歌山県','鳥取県','島根県','岡山県','広島県','山口県','徳島県','香川県','愛媛県','高知県','福岡県','佐賀県','長崎県','熊本県','大分県','宮崎県','鹿児島県','沖縄県'];
       const SCAN_INTERVAL_MS = 16;
       const SCAN_ROI_FRACTION = 0.75;
+      const COMPLETION_SCAN_CONFIG = {
+        sagawa: { shape: 'band', widthFraction: 0.75, heightFraction: 0.38, hint: '横長の枠に、読みたいバーコードを1本収めてください' },
+        yamato: { shape: 'band', widthFraction: 0.75, heightFraction: 0.38, hint: '横長の枠に、読みたいバーコードを1本収めてください' },
+        clickpost: { shape: 'band', widthFraction: 0.75, heightFraction: 0.38, hint: '横長の枠に、読みたいバーコードを1本収めてください' }
+      };
+      const COMPLETION_LABEL_CANVAS_WIDTH = 1920;
+      const ZXING_BARCODE_FORMAT_NAMES = {
+        0: 'AZTEC', 1: 'CODABAR', 2: 'CODE_39', 3: 'CODE_93', 4: 'CODE_128',
+        5: 'DATA_MATRIX', 6: 'EAN_8', 7: 'EAN_13', 8: 'ITF', 9: 'MAXICODE',
+        10: 'PDF_417', 11: 'QR_CODE', 12: 'RSS_14', 13: 'RSS_EXPANDED',
+        14: 'UPC_A', 15: 'UPC_E', 16: 'UPC_EAN_EXTENSION', 17: 'MSI', 18: 'PLESSEY'
+      };
       let scanTimer = null;
       let scanTimerType = '';
       let decodeInFlight = false;
       let scanGeneration = 0;
       let barcodeDetector = null;
+      let barcodeDetectorSupportedFormats = [];
+      let zxingReader = null;
+      let zxingReaderProfile = '';
+      let zxingInitError = '';
+      let zxingHintStatus = '';
       let canvasSide = 0;
       let debugPerformanceEnabled = false;
       let cameraPerformance = null;
       let activeScanPerformance = null;
       let performanceSequence = 0;
       let performanceHistory = [];
+      let performancePanelLastRenderedAt = 0;
       let lastRequestCompletedAt = null;
       const MAX_PRINT_REQUESTS = 1;
       let printJobs = [];
@@ -295,6 +388,9 @@
           firstScanEligibleMs: cameraPerformance.firstScanEligibleMs,
           barcodeDetectorApiAvailable: cameraPerformance.barcodeDetectorApiAvailable,
           barcodeDetectorQrSupported: cameraPerformance.barcodeDetectorQrSupported,
+          barcodeDetectorSupportedFormats: [...(cameraPerformance.barcodeDetectorSupportedFormats || [])],
+          zxingAvailable: cameraPerformance.zxingAvailable,
+          zxingInitError: cameraPerformance.zxingInitError || '',
           scanScheduler: cameraPerformance.scanScheduler,
           userAgent: cameraPerformance.userAgent,
           platform: cameraPerformance.platform,
@@ -369,7 +465,18 @@
         perfPanel.hidden = !debugPerformanceEnabled;
         if (!debugPerformanceEnabled) return;
         if (!performanceHistory.length) {
-          perfOutput.textContent = '計測待機中\nQRを読み取ると結果を表示します。';
+          const camera = cameraPerformance || {};
+          const roi = cameraRoiSnapshot_();
+          const liveScan = activeScanPerformance || {};
+          perfOutput.textContent = [
+            '計測待機中（スキャン履歴なし）',
+            `BarcodeDetector: API ${camera.barcodeDetectorApiAvailable ? 'yes' : 'no'} / QR ${camera.barcodeDetectorQrSupported ? 'yes' : 'no'} / formats ${(camera.barcodeDetectorSupportedFormats || barcodeDetectorSupportedFormats || []).join(', ') || '—'}`,
+            `ZXing: ${camera.zxingAvailable || zxingReader ? 'loaded' : 'unavailable'}${camera.zxingInitError || zxingInitError ? ` / ${camera.zxingInitError || zxingInitError}` : ''}${zxingHintStatus ? ` / ${zxingHintStatus}` : ''}`,
+            `試行方式: ${camera.scanScheduler || '—'}`,
+            `映像: ${roi.videoWidth}x${roi.videoHeight} / ROI ${roi.sourceWidth}x${roi.sourceHeight} / canvas ${roi.canvasWidth}x${roi.canvasHeight}`,
+            `ライブ試行: ${liveScan.attemptCount || 0}回 / 直近デコード ${formatMs(liveScan.decodeLastMs)}`,
+            `端末: ${camera.platform || navigator.platform || '—'} / ${camera.userAgent || navigator.userAgent || '—'}`
+          ].join('\n');
           return;
         }
 
@@ -405,7 +512,8 @@
           `カメラ: getUserMedia ${formatMs(camera.getUserMediaMs)} / play ${formatMs(camera.videoPlayMs)} / detector ${formatMs(camera.detectorInitMs)} / ready ${formatMs(camera.cameraReadyMs)} / 初回試行可能 ${formatMs(camera.firstScanEligibleMs)}`,
           `映像: ${settings.width || scan.sourceWidth || 0}x${settings.height || scan.sourceHeight || 0} @${settings.frameRate || '—'}fps → ROI ${scan.sourceSide || 0}px → canvas ${scan.canvasSide || 0}px`,
           `試行方式: ${camera.scanScheduler || '—'}`,
-          `BarcodeDetector: API ${camera.barcodeDetectorApiAvailable ? 'yes' : 'no'} / QR ${camera.barcodeDetectorQrSupported ? 'yes' : 'no'}`,
+          `BarcodeDetector: API ${camera.barcodeDetectorApiAvailable ? 'yes' : 'no'} / QR ${camera.barcodeDetectorQrSupported ? 'yes' : 'no'} / formats ${(camera.barcodeDetectorSupportedFormats || []).join(', ') || '—'}`,
+          `ZXing: ${camera.zxingAvailable ? 'loaded' : 'unavailable'}${camera.zxingInitError ? ` / ${camera.zxingInitError}` : ''}`,
           `端末: ${camera.platform || '—'} / ${camera.userAgent || '—'}`
         ];
         if (api.badResponseKind) {
@@ -433,12 +541,24 @@
         perfOutput.textContent = lines.join('\n');
       }
 
+      function cameraRoiSnapshot_() {
+        const videoWidth = video.videoWidth || 0;
+        const videoHeight = video.videoHeight || 0;
+        const labelProfile = scanProfile_() === 'label';
+        const config = labelProfile ? completionScanConfig_() : { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION };
+        const shortSide = Math.min(videoWidth, videoHeight);
+        const sourceWidth = Math.floor((labelProfile ? videoWidth : shortSide) * config.widthFraction);
+        const sourceHeight = Math.floor(shortSide * config.heightFraction);
+        return { videoWidth, videoHeight, sourceWidth, sourceHeight, canvasWidth: canvas.width || 0, canvasHeight: canvas.height || 0 };
+      }
+
       function setScanFeedback(active, message) {
         scanFrameElement.classList.toggle('detected', active);
         if (active && message) document.getElementById('scan-feedback').textContent = message;
+        const completion = currentMode === 'shipping-complete';
         document.getElementById('camera-subtitle').textContent = active
           ? (message || 'QR読取済み・照会中…')
-          : (currentMode === 'shipping' ? 'QRを順番にスキャンしてください' : 'QRをかざしてください');
+          : (completion ? (completionStep === 'orders' ? '注文書QRを読み取ってください' : '実物伝票を読み取ってください') : (currentMode === 'shipping' ? 'QRを順番にスキャンしてください' : 'QRをかざしてください'));
       }
 
       function summarizeBadResponse(responseText, action) {
@@ -911,22 +1031,36 @@
       function showModeSelect() {
         stopCamera();
         currentMode = '';
+        completionCarrier = '';
+        completionConsolidation = '';
+        completionStep = '';
         showScreen('mode-screen');
       }
 
       function updateCameraMode() {
         const shipping = currentMode === 'shipping';
         const printing = currentMode === 'print';
-        document.getElementById('camera-title').textContent = shipping ? '発送準備' : '印刷モード';
-        document.getElementById('camera-subtitle').textContent = shipping ? 'QRを順番にスキャンしてください' : 'QRをかざしてください';
-        document.getElementById('camera-hint').textContent = shipping ? 'スキャンすると一覧に追加されます' : 'スキャンすると自動で印刷タグを付けます';
+        const completion = currentMode === 'shipping-complete';
+        document.getElementById('camera-title').textContent = completion ? '発送完了' : (shipping ? '発送準備' : '印刷モード');
+        document.getElementById('camera-subtitle').textContent = completion
+          ? (completionStep === 'orders' ? '注文書QRを読み取ってください' : '実物伝票を読み取ってください')
+          : (shipping ? 'QRを順番にスキャンしてください' : 'QRをかざしてください');
+        const scanConfig = completion && completionStep === 'label' ? completionScanConfig_() : null;
+        if (scanConfig && scanConfig.shape === 'band') scanFrameElement.classList.add('band');
+        else scanFrameElement.classList.remove('band');
+        document.getElementById('camera-hint').textContent = completion
+          ? (completionStep === 'orders' ? '注文書QRを読み取ります' : (scanConfig ? scanConfig.hint : '伝票のQRまたはバーコードを読み取ります'))
+          : (shipping ? 'スキャンすると一覧に追加されます' : 'スキャンすると自動で印刷タグを付けます');
         document.getElementById('print-controls').hidden = !printing;
         document.getElementById('ship-controls').hidden = !shipping;
+        document.getElementById('completion-controls').hidden = !completion;
+        document.getElementById('manual-scan-controls').hidden = !(printing || shipping || completion);
         if (printing) renderPrintQueue();
         if (shipping) {
           document.getElementById('carrier-label').textContent = '発送準備';
           renderShippingList();
         }
+        if (completion) renderCompletionControls_();
       }
 
       function startPrintMode() {
@@ -939,6 +1073,70 @@
       function showCarrierSelect() {
         stopCamera();
         showScreen('carrier-screen');
+      }
+
+      function showCompletionModeSelect() {
+        stopCamera();
+        currentMode = '';
+        document.getElementById('completion-diagnostic-button').hidden = !isPreviewDiagnostic_();
+        document.getElementById('completion-diagnostic-carrier-wrap').hidden = !isPreviewDiagnostic_();
+        showScreen('completion-mode-screen');
+      }
+
+      function startCompletionMode(consolidation) {
+        currentMode = 'shipping-complete';
+        completionConsolidation = consolidation;
+        completionCarrier = '';
+        completionStep = 'orders';
+        completionOrders = [];
+        completionRawTrackingValue = '';
+        completionLabelValues = [];
+        completionLabelReadings = [];
+        completionProbeNoCandidateCount = 0;
+        completionSessionShipmentId = '';
+        completionExpectedOrderCount = 0;
+        completionPendingOrderId = '';
+        completionConfirmedTracking = '';
+        completionPlanId = '';
+        completionNotify = null;
+        completionCardsMissing = [];
+        initializeZxingReader_('label').then(() => renderPerformancePanel());
+        updateCameraMode();
+        startCamera().then(maybeShowInstallHint);
+      }
+
+      function isPreviewDiagnostic_() {
+        return window.location.hostname === 'xsport0023.github.io' && window.location.pathname.includes('/preview/');
+      }
+
+      function startCompletionDiagnostic_() {
+        currentMode = 'shipping-complete';
+        completionConsolidation = 'individual';
+        completionDiagnosticCarrier = document.getElementById('completion-diagnostic-carrier').value || 'sagawa';
+        completionCarrier = completionDiagnosticCarrier;
+        completionStep = 'label';
+        completionOrders = [];
+        completionLabelValues = [];
+        completionLabelReadings = [];
+        completionProbeNoCandidateCount = 0;
+        completionSessionShipmentId = '';
+        completionRawTrackingValue = '';
+        requestInFlight = false;
+        updateCameraMode();
+        startCamera().then(maybeShowInstallHint);
+      }
+
+      function normalizeCompletionCarrier_(value) {
+        const raw = String(value || '').toLowerCase();
+        if (raw.includes('sagawa') || raw.includes('佐川')) return 'sagawa';
+        if (raw.includes('yamato') || raw.includes('ヤマト')) return 'yamato';
+        if (raw.includes('clickpost') || raw.includes('クリック')) return 'clickpost';
+        return '';
+      }
+
+      function completionScanConfig_() {
+        const carrier = isPreviewDiagnostic_() ? completionDiagnosticCarrier : normalizeCompletionCarrier_(completionCarrier);
+        return COMPLETION_SCAN_CONFIG[carrier] || COMPLETION_SCAN_CONFIG.yamato;
       }
 
       async function startShippingMode() {
@@ -1053,6 +1251,9 @@
             scanScheduler: typeof video.requestVideoFrameCallback === 'function' ? 'requestVideoFrameCallback' : `setTimeout(${SCAN_INTERVAL_MS}ms)`,
             userAgent: navigator.userAgent || '',
             platform: navigator.platform || '',
+            barcodeDetectorSupportedFormats: [],
+            zxingAvailable: false,
+            zxingInitError: '',
             settings: {}
           };
           const mediaStartedAt = nowMs();
@@ -1086,13 +1287,18 @@
       async function initializeBarcodeDetector() {
         const detectorStartedAt = nowMs();
         barcodeDetector = null;
+        barcodeDetectorSupportedFormats = [];
+        const profile = scanProfile_();
         if (!('BarcodeDetector' in window)) {
           if (cameraPerformance) cameraPerformance.detectorInitMs = nowMs() - detectorStartedAt;
+          await initializeZxingReader_(profile);
           return;
         }
         try {
           const formats = await window.BarcodeDetector.getSupportedFormats();
-          if (formats.includes('qr_code')) {
+          barcodeDetectorSupportedFormats = Array.isArray(formats) ? formats : [];
+          if (cameraPerformance) cameraPerformance.barcodeDetectorSupportedFormats = [...barcodeDetectorSupportedFormats];
+          if (profile === 'qr' && formats.includes('qr_code')) {
             barcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
             if (cameraPerformance) cameraPerformance.barcodeDetectorQrSupported = true;
           }
@@ -1100,6 +1306,76 @@
           barcodeDetector = null;
         } finally {
           if (cameraPerformance) cameraPerformance.detectorInitMs = nowMs() - detectorStartedAt;
+        }
+        if (profile === 'label') await initializeZxingReader_(profile);
+      }
+
+      function scanProfile_() {
+        return currentMode === 'shipping-complete' && completionStep === 'label' ? 'label' : 'qr';
+      }
+
+      async function initializeZxingReader_(profile) {
+        if (profile !== 'label') return false;
+        if (zxingReaderProfile === profile && zxingReader) {
+          if (cameraPerformance) {
+            cameraPerformance.zxingAvailable = true;
+            cameraPerformance.zxingInitError = '';
+          }
+          return true;
+        }
+        zxingInitError = '';
+        const zxing = window.ZXingBrowser || window.ZXing;
+        if (!zxing || typeof zxing.BrowserMultiFormatReader !== 'function') {
+          zxingInitError = 'グローバルまたはBrowserMultiFormatReaderが見つかりません';
+          zxingHintStatus = '';
+          if (cameraPerformance) {
+            cameraPerformance.zxingAvailable = false;
+            cameraPerformance.zxingInitError = zxingInitError;
+          }
+          return false;
+        }
+        try {
+          let hints = null;
+          zxingHintStatus = '';
+          if (profile === 'label') {
+            const hintTypes = zxing.DecodeHintType || (window.ZXing && window.ZXing.DecodeHintType);
+            const barcodeFormats = zxing.BarcodeFormat || (window.ZXing && window.ZXing.BarcodeFormat);
+            if (!hintTypes || !barcodeFormats || hintTypes.POSSIBLE_FORMATS === undefined || hintTypes.TRY_HARDER === undefined) {
+              zxingHintStatus = '形式ヒントを適用できません（全形式で試行中）';
+            } else {
+              const formats = ['CODABAR', 'CODE_128', 'ITF', 'CODE_39']
+                .map(name => barcodeFormats[name])
+                .filter(value => value !== undefined);
+              if (formats.length) {
+                hints = new Map();
+                hints.set(hintTypes.POSSIBLE_FORMATS, formats);
+                hints.set(hintTypes.TRY_HARDER, true);
+                zxingHintStatus = 'CODABAR/CODE_128/ITF/CODE_39 + TRY_HARDER';
+              } else {
+                zxingHintStatus = '伝票用形式を解決できません（全形式で試行中）';
+              }
+            }
+          }
+          zxingReader = new zxing.BrowserMultiFormatReader(hints);
+          if (typeof zxingReader.decodeFromCanvas !== 'function') {
+            throw new Error('decodeFromCanvasが見つかりません');
+          }
+          zxingReaderProfile = profile;
+          if (cameraPerformance) {
+            cameraPerformance.zxingAvailable = true;
+            cameraPerformance.zxingInitError = '';
+          }
+          return true;
+        } catch (error) {
+          zxingReader = null;
+          zxingReaderProfile = '';
+          zxingInitError = error && error.message ? error.message : 'ZXing初期化失敗';
+          zxingHintStatus = '';
+          if (cameraPerformance) {
+            cameraPerformance.zxingAvailable = false;
+            cameraPerformance.zxingInitError = zxingInitError;
+          }
+          return false;
         }
       }
 
@@ -1151,7 +1427,18 @@
         try {
           const result = await decodeFrame();
           recordScanAttempt(attemptStartedAt, nowMs() - attemptStartedAt, result);
-          if (generation === scanGeneration && result.value) handleQr(result.value);
+          if (result.error) {
+            scanning = false;
+            const message = result.error === 'ZXING_UNAVAILABLE'
+              ? '伝票読取ライブラリを読み込めません。下の手入力を使用してください。'
+              : '伝票読取でエラーが発生しました。手入力を使用してください。';
+            showToast(message, 'error');
+          }
+          if (generation === scanGeneration && result.value) handleScanValue_(result.value, result.decoderPath, result.barcodeFormat);
+          if (debugPerformanceEnabled && nowMs() - performancePanelLastRenderedAt >= 250) {
+            performancePanelLastRenderedAt = nowMs();
+            renderPerformancePanel();
+          }
         } finally {
           if (generation === scanGeneration) {
             decodeInFlight = false;
@@ -1161,26 +1448,33 @@
       }
 
       async function decodeFrame() {
-        const sourceSide = Math.floor(Math.min(video.videoWidth, video.videoHeight) * SCAN_ROI_FRACTION);
-        if (!sourceSide) return { value: '', decoderPath: 'none', sourceSide: 0, canvasSide: 0 };
-        const targetSide = Math.min(640, sourceSide);
-        if (canvasSide !== targetSide) {
-          canvas.width = targetSide;
-          canvas.height = targetSide;
-          canvasSide = targetSide;
+        const labelProfile = scanProfile_() === 'label';
+        const scanConfig = labelProfile ? completionScanConfig_() : { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION, shape: 'square' };
+        const shortSide = Math.min(video.videoWidth, video.videoHeight);
+        const sourceWidth = Math.floor((labelProfile ? video.videoWidth : shortSide) * scanConfig.widthFraction);
+        const sourceHeight = Math.floor(shortSide * scanConfig.heightFraction);
+        if (!sourceWidth || !sourceHeight) return { value: '', decoderPath: 'none', sourceSide: 0, canvasSide: 0 };
+        const targetWidth = labelProfile ? Math.min(COMPLETION_LABEL_CANVAS_WIDTH, sourceWidth) : Math.min(640, sourceWidth);
+        const targetHeight = Math.min(640, Math.max(160, Math.round(sourceHeight * targetWidth / sourceWidth)));
+        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          canvasSide = targetWidth;
         }
-        const sourceX = Math.floor((video.videoWidth - sourceSide) / 2);
-        const sourceY = Math.floor((video.videoHeight - sourceSide) / 2);
-        context.drawImage(video, sourceX, sourceY, sourceSide, sourceSide, 0, 0, targetSide, targetSide);
+        const sourceX = Math.floor((video.videoWidth - sourceWidth) / 2);
+        const sourceY = Math.floor((video.videoHeight - sourceHeight) / 2);
+        context.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, targetWidth, targetHeight);
 
-        if (barcodeDetector) {
+        const profile = scanProfile_();
+        if (profile === 'qr' && barcodeDetector) {
           try {
             const detected = await barcodeDetector.detect(canvas);
             return {
               value: detected.length && detected[0].rawValue ? detected[0].rawValue : '',
               decoderPath: 'BarcodeDetector',
-              sourceSide,
-              canvasSide: targetSide
+              barcodeFormat: detected.length && detected[0].format ? detected[0].format : '',
+              sourceSide: sourceWidth,
+              canvasSide: targetWidth
             };
           } catch (error) {
             barcodeDetector = null;
@@ -1188,14 +1482,48 @@
           }
         }
 
-        const image = context.getImageData(0, 0, canvasSide, canvasSide);
+        if (profile === 'label' && !zxingReader) {
+          return { value: '', decoderPath: 'ZXing unavailable', error: 'ZXING_UNAVAILABLE', sourceSide: sourceWidth, canvasSide: targetWidth };
+        }
+
+        if (profile === 'label' && zxingReader) {
+          try {
+            const result = zxingReader.decodeFromCanvas(canvas);
+            const value = result && typeof result.getText === 'function' ? result.getText() : (result && (result.text || result.rawValue) || '');
+            let barcodeFormat = '';
+            try {
+              barcodeFormat = result && typeof result.getBarcodeFormat === 'function'
+                ? formatZxingBarcodeFormat_(result.getBarcodeFormat())
+                : formatZxingBarcodeFormat_(result && (result.format || result.barcodeFormat) || '');
+            } catch (error) {
+              barcodeFormat = '';
+            }
+            return { value: value || '', decoderPath: 'ZXing', barcodeFormat, sourceSide: sourceWidth, canvasSide: targetWidth };
+          } catch (error) {
+            // NotFoundExceptionの型名はUMD minify後に安定しないため、
+            // フレーム内にコードが無い通常系を含め、ここでは「値なし」として扱う。
+            // API不在・グローバル不在は初期化時に検出して手入力へ誘導する。
+            return { value: '', decoderPath: 'ZXing', sourceSide: sourceWidth, canvasSide: targetWidth };
+          }
+        }
+
+        const image = context.getImageData(0, 0, targetWidth, targetHeight);
         const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'dontInvert' });
         return {
           value: code && code.data ? code.data : '',
           decoderPath: 'jsQR',
-          sourceSide,
-          canvasSide: targetSide
+          sourceSide: sourceWidth,
+          canvasSide: targetWidth
         };
+      }
+
+      function formatZxingBarcodeFormat_(value) {
+        if (value === null || value === undefined || value === '') return '';
+        if (typeof value === 'number' || /^\d+$/.test(String(value))) {
+          const numeric = Number(value);
+          return ZXING_BARCODE_FORMAT_NAMES[numeric] || String(value);
+        }
+        return String(value);
       }
 
       function validateOrderCode(rawValue) {
@@ -1284,6 +1612,280 @@
         }
         if (currentMode === 'print') acceptPrintQr(validation.orderId);
         else if (currentMode === 'shipping') handleShippingQr(validation.orderId);
+        else if (currentMode === 'shipping-complete' && completionStep === 'orders') acceptCompletionOrder_(validation.orderId);
+      }
+
+      function handleScanValue_(rawValue, decoderPath, barcodeFormat) {
+        decoderPath = decoderPath || 'unknown';
+        if (currentMode === 'shipping-complete' && completionStep === 'label') {
+          acceptCompletionLabel_(String(rawValue || '').trim(), decoderPath, barcodeFormat);
+          return;
+        }
+        handleQr(rawValue);
+      }
+
+      function acceptCompletionOrder_(rawValue) {
+        const validation = validateOrderCode(rawValue);
+        if (!validation.ok) {
+          showToast('注文書QR（数字のみ）を読み取ってください。', 'warning');
+          return;
+        }
+        if (completionOrders.some(item => item.orderId === validation.orderId) || requestInFlight) {
+          showToast(`${validation.orderId}は既に読み取り済みです。`, 'warning');
+          return;
+        }
+        completionPendingOrderId = validation.orderId;
+        submitCompletionOrderScan_(validation.orderId, null);
+      }
+
+      async function submitCompletionOrderScan_(orderId, sessionShipmentId) {
+        requestInFlight = true;
+        setScanFeedback(true, '注文QR読取済み・照会中…');
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_done_scan_order',
+            id_token: idToken,
+            mode: completionConsolidation === 'single_parcel' ? 'consolidated' : 'individual',
+            order_id: orderId,
+            session_shipment_id: sessionShipmentId || completionSessionShipmentId || null
+          }) });
+          const result = await fetchJsonWithPerformance('ship_done_scan_order', body, null);
+          const data = result.data;
+          if (handleAuthError(data)) return;
+          if (!data.ok) {
+            if (data.error_code === 'MULTIPLE_SHIP_PREP') renderCompletionCandidates_(data.candidates || [], orderId);
+            showToast(data.error || '注文を発送完了の対象にできません。', 'error');
+            return;
+          }
+          completionSessionShipmentId = data.shipment_id || completionSessionShipmentId;
+          completionCarrier = data.carrier || data.carrier_label || completionCarrier;
+          completionExpectedOrderCount = Number(data.expected_order_count) || completionExpectedOrderCount || 1;
+          const scannedId = String(data.order_id || orderId);
+          if (!completionOrders.some(item => item.orderId === scannedId)) {
+            completionOrders.push({ orderId: scannedId, orderNumber: data.order_number || '' });
+          }
+          renderCompletionControls_();
+          if (completionConsolidation === 'individual') beginCompletionLabelStep_();
+          else showToast(`${data.order_number || orderId}を追加しました。`, 'success');
+        } catch (error) {
+          showToast('注文照会に失敗しました。もう一度お試しください。', 'error');
+        } finally {
+          requestInFlight = false;
+          setScanFeedback(false);
+          if (currentMode === 'shipping-complete' && completionStep === 'orders') returnToCamera();
+        }
+      }
+
+      function renderCompletionCandidates_(candidates, orderId) {
+        const container = document.getElementById('completion-candidates');
+        if (!container) return;
+        completionPendingOrderId = orderId;
+        container.textContent = '';
+        candidates.forEach(candidate => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'completion-action';
+          button.textContent = `${candidate.shipment_id || '発送ID不明'} / ${candidate.carrier_label || candidate.carrier || '運送会社不明'} / ${candidate.status || ''}`;
+          button.addEventListener('click', () => {
+            container.hidden = true;
+            submitCompletionOrderScan_(completionPendingOrderId, candidate.shipment_id || null);
+          });
+          container.appendChild(button);
+        });
+        container.hidden = candidates.length === 0;
+        document.getElementById('completion-controls').hidden = false;
+        showScreen('camera-screen');
+      }
+
+      async function beginCompletionLabelStep_() {
+        if (!completionOrders.length) {
+          showToast('先に注文書QRを読み取ってください。', 'warning');
+          return;
+        }
+        if (completionConsolidation === 'single_parcel' && completionExpectedOrderCount && completionOrders.length !== completionExpectedOrderCount) {
+          showToast(`注文数が不足しています（${completionOrders.length}/${completionExpectedOrderCount}件）。読み残しを確認してください。`, 'error');
+          return;
+        }
+        completionStep = 'label';
+        requestInFlight = false;
+        scanning = false;
+        cancelScheduledScan();
+        scanGeneration += 1;
+        decodeInFlight = false;
+        await initializeZxingReader_('label');
+        updateCameraMode();
+        scanning = true;
+        showScreen('camera-screen');
+        beginScanCycle();
+        scheduleScan();
+      }
+
+      function acceptCompletionLabel_(rawValue, decoderPath, barcodeFormat) {
+        const value = String(rawValue || '').trim();
+        if (!value || requestInFlight || completionLabelValues.includes(value)) return;
+        completionLabelValues.push(value);
+        completionLabelReadings.push({
+          sequence: completionLabelReadings.length + 1,
+          value,
+          decoderPath: decoderPath || 'unknown',
+          barcodeFormat: barcodeFormat || ''
+        });
+        renderCompletionControls_();
+        renderCompletionRawValues_();
+        if (!isPreviewDiagnostic_()) probeCompletionLabel_(value);
+        showToast('伝票の値を受け付けました。続けて他のコードも読み取れます。', 'success');
+      }
+
+      function formatCompletionReading_(reading) {
+        if (!reading) return '未読';
+        const format = reading.barcodeFormat ? `/${reading.barcodeFormat}` : '';
+        return `#${reading.sequence} ${reading.value} [${reading.decoderPath}${format}]`;
+      }
+
+      function renderCompletionRawValues_() {
+        const text = completionLabelReadings.length
+          ? completionLabelReadings.map(formatCompletionReading_).join(' / ')
+          : '未読';
+        const result = document.getElementById('completion-result-raw-values');
+        if (result) result.textContent = text;
+      }
+
+      async function probeCompletionLabel_(value) {
+        if (completionProbeInFlight || !value) return;
+        completionProbeInFlight = true;
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_done_probe',
+            id_token: idToken,
+            label_values: [value]
+          }) });
+          const result = await fetchJsonWithPerformance('ship_done_probe', body, null);
+          const data = result.data || {};
+          if (data.status === 'OK') {
+            completionProbeNoCandidateCount = 0;
+            completionRawTrackingValue = data.tracking_number || '';
+            const latest = document.getElementById('completion-latest-reading');
+            if (latest) latest.textContent = `追跡番号候補: ${data.tracking_display || data.tracking_number || '不明'}（probe OK）`;
+            showToast(`追跡番号候補: ${data.tracking_display || data.tracking_number || '不明'}`, 'success');
+          } else if (data.status === 'NO_CANDIDATE') {
+            completionProbeNoCandidateCount += 1;
+            if (completionProbeNoCandidateCount >= 5) {
+              showToast('追跡番号を読み取れていません。伝票を合わせるか手入力してください。', 'warning');
+            }
+          } else if (data.status === 'MULTIPLE_CANDIDATES') {
+            showToast('追跡番号候補が複数あります。伝票を確認してください。', 'warning');
+          }
+        } catch (error) {
+          // 未反映環境では ship_done_probe が存在しないため、読取自体は継続する。
+        } finally {
+          completionProbeInFlight = false;
+        }
+      }
+
+      async function submitCompletionPlan_() {
+        if (!completionLabelValues.length) {
+          showToast('伝票から値を1つ以上読み取ってください。', 'warning');
+          return;
+        }
+        requestInFlight = true;
+        scanning = false;
+        cancelScheduledScan();
+        scanGeneration += 1;
+        decodeInFlight = false;
+        if (isPreviewDiagnostic_()) {
+          renderCompletionResult_({ ok: false, rawOnly: true, error: 'プレビュー診断のためGAS APIは呼び出していません。' });
+          showScreen('completion-result-screen');
+          requestInFlight = false;
+          return;
+        }
+        try {
+          const body = new URLSearchParams({ payload: JSON.stringify({
+            action: 'ship_done_plan',
+            id_token: idToken,
+            mode: completionConsolidation === 'single_parcel' ? 'consolidated' : 'individual',
+            shipment_id: completionSessionShipmentId,
+            order_ids: completionOrders.map(item => item.orderId),
+            label_values: completionLabelValues
+          }) });
+          const result = await fetchJsonWithPerformance('ship_done_plan', body, null);
+          const data = result.data;
+          if (handleAuthError(data)) return;
+          if (!data.ok) {
+            renderCompletionResult_({ ok: false, error: data.error || '伝票を照合できませんでした。' });
+            showScreen('completion-result-screen');
+            return;
+          }
+          completionPlanId = data.plan_id || '';
+          completionNotify = data.notify;
+          completionCardsMissing = Array.isArray(data.cards_missing) ? data.cards_missing : [];
+          completionRawTrackingValue = data.tracking_number || '';
+          renderCompletionResult_(data);
+          showScreen('completion-result-screen');
+        } catch (error) {
+          renderCompletionResult_({ ok: false, error: '伝票照合に失敗しました。' });
+          showScreen('completion-result-screen');
+        } finally {
+          requestInFlight = false;
+        }
+      }
+
+      function renderCompletionControls_() {
+        const label = document.getElementById('completion-step-label');
+        const count = document.getElementById('completion-count');
+        const list = document.getElementById('completion-list');
+        const candidates = document.getElementById('completion-candidates');
+        const close = document.getElementById('completion-close-orders');
+        const closeLabel = document.getElementById('completion-close-label');
+        if (!label || !count || !list || !close || !closeLabel) return;
+        const latest = document.getElementById('completion-latest-reading');
+        if (latest) latest.textContent = `直近の読取: ${formatCompletionReading_(completionLabelReadings[completionLabelReadings.length - 1])}`;
+        label.textContent = completionStep === 'label'
+          ? (completionConsolidation === 'single_parcel' ? 'まとめ発送 / 伝票' : '個別発送 / 伝票')
+          : (completionConsolidation === 'single_parcel' ? 'まとめ発送 / 注文書QR' : '個別発送 / 注文書QR');
+        count.textContent = `${completionOrders.length}件`;
+        list.textContent = '';
+        completionOrders.forEach(item => {
+          const row = document.createElement('div');
+          row.className = 'completion-item';
+          row.textContent = item.orderId;
+          list.appendChild(row);
+        });
+        close.hidden = completionStep !== 'orders' || completionConsolidation !== 'single_parcel';
+        closeLabel.hidden = completionStep !== 'label';
+        if (completionStep === 'label') {
+          count.textContent = `${completionLabelValues.length}個の値`;
+          label.textContent = `${completionConsolidation === 'single_parcel' ? 'まとめ発送' : '個別発送'} / 伝票`;
+          list.textContent = '';
+          completionLabelValues.forEach(value => {
+            const row = document.createElement('div');
+            row.className = 'completion-item';
+            const reading = completionLabelReadings.find(item => item.value === value);
+            row.textContent = formatCompletionReading_(reading || { sequence: 0, value, decoderPath: 'unknown' });
+            list.appendChild(row);
+          });
+        }
+        if (candidates) candidates.hidden = true;
+      }
+
+      function renderCompletionResult_(result) {
+        document.getElementById('completion-tracking-number').textContent = result.tracking_display || result.tracking_number || result.trackingNumber || '読み取り値なし';
+        const orders = Array.isArray(result.orders) && result.orders.length
+          ? result.orders.map(order => order.order_number || order.order_id).join(' / ')
+          : completionOrders.map(item => item.orderNumber || item.orderId).join(' / ');
+        document.getElementById('completion-result-orders').textContent = orders;
+        document.getElementById('completion-result-shipment').textContent = result.shipment_id || result.shipmentId || completionSessionShipmentId || 'P4照合待ち';
+        document.getElementById('completion-result-carrier').textContent = result.carrier_label || result.carrier || 'P4照合待ち';
+        const cardNames = Array.isArray(result.cards) ? result.cards.map(card => card.name).filter(Boolean) : [];
+        document.getElementById('completion-result-card').textContent = cardNames.join(' / ') || result.cardName || 'P4照合待ち';
+        renderCompletionRawValues_();
+        const confirm = document.getElementById('completion-confirm-button');
+        const ready = result.ok === true || result.readyForConfirmation === true;
+        confirm.disabled = !ready;
+        document.getElementById('completion-result-notice').textContent = ready
+          ? (result.notify === false ? '顧客通知なし。伝票の印字と一致することを確認してください。' : '伝票の印字と一致することを確認してから発送確定してください。')
+          : (result.error || 'P3/P4の照合結果を受け取るまで発送確定はできません。');
+        const missing = Array.isArray(result.cards_missing) ? result.cards_missing : [];
+        if (missing.length) document.getElementById('completion-result-card').textContent = 'カード削除なし（対象カードなし）';
       }
 
       function handleAuthError(data) {
@@ -1699,6 +2301,11 @@
 
       document.getElementById('print-mode-button').addEventListener('click', startPrintMode);
       document.getElementById('ship-mode-button').addEventListener('click', showCarrierSelect);
+      document.getElementById('completion-mode-button').addEventListener('click', showCompletionModeSelect);
+      document.getElementById('completion-individual-button').addEventListener('click', () => startCompletionMode('individual'));
+      document.getElementById('completion-single-parcel-button').addEventListener('click', () => startCompletionMode('single_parcel'));
+      document.getElementById('completion-diagnostic-button').addEventListener('click', startCompletionDiagnostic_);
+      document.getElementById('completion-back-button').addEventListener('click', showModeSelect);
       document.getElementById('sagawa-button').addEventListener('click', () => startShippingMode());
       document.getElementById('carrier-back-button').addEventListener('click', showModeSelect);
       document.getElementById('retry-button').addEventListener('click', startCamera);
@@ -1721,6 +2328,33 @@
         returnToCamera();
       });
       document.getElementById('ship-finalize-button').addEventListener('click', finalizeShipping);
+      document.getElementById('completion-close-orders').addEventListener('click', beginCompletionLabelStep_);
+      document.getElementById('completion-close-label').addEventListener('click', submitCompletionPlan_);
+      document.getElementById('completion-result-cancel').addEventListener('click', () => {
+        completionRawTrackingValue = '';
+        completionStep = 'label';
+        requestInFlight = false;
+        startCamera();
+      });
+      document.getElementById('completion-confirm-button').addEventListener('click', () => {
+        if (!completionRawTrackingValue) return;
+        completionConfirmedTracking = completionRawTrackingValue;
+        showToast('確認値を保持しました。P5承認後に実行します。', 'success');
+      });
+      document.getElementById('manual-scan-submit').addEventListener('click', () => {
+        const input = document.getElementById('manual-scan-input');
+        const value = input.value.trim();
+        if (!value) return;
+        input.value = '';
+        handleScanValue_(value, 'manual', 'MANUAL');
+      });
+      document.getElementById('manual-scan-input').addEventListener('keydown', event => {
+        if (event.key === 'Enter') document.getElementById('manual-scan-submit').click();
+      });
+      document.getElementById('manual-scan-cancel').addEventListener('click', () => {
+        document.getElementById('manual-scan-input').value = '';
+        document.getElementById('manual-scan-input').blur();
+      });
       document.getElementById('carrier-confirmation-back').addEventListener('click', () => showConsolidationScreen());
       document.getElementById('carrier-confirmation-submit').addEventListener('click', confirmCarrierSelection);
       document.getElementById('shipping-issues-back').addEventListener('click', () => {
