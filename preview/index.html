@@ -30,7 +30,7 @@
     .title { font-size:18px; font-weight:800; letter-spacing:.04em; }
     .subtitle { margin-left:auto; color:#d5d9e8; font-size:12px; }
     .scan-frame { position:absolute; top:50%; left:50%; width:min(72vw,300px); aspect-ratio:1; transform:translate(-50%,-50%); }
-    .scan-frame.band { width:min(76vw,360px); aspect-ratio:2.2; }
+    .scan-frame.band { width:min(82vw,390px); aspect-ratio:3.5; }
     .scan-frame::before, .scan-frame::after, .corner { content:""; position:absolute; width:42px; height:42px; border:4px solid #fff; }
     .scan-frame::before { top:0; left:0; border-right:0; border-bottom:0; border-radius:8px 0 0; }
     .scan-frame::after { top:0; right:0; border-left:0; border-bottom:0; border-radius:0 8px 0 0; }
@@ -311,7 +311,7 @@
         yamato: { shape: 'square', widthFraction: 0.75, heightFraction: 0.75, hint: '伝票のバーコードを枠に収めてください' },
         clickpost: { shape: 'square', widthFraction: 0.75, heightFraction: 0.75, hint: '伝票のバーコードを枠に収めてください' }
       };
-      const COMPLETION_LABEL_CANVAS_WIDTH = 1280;
+      const COMPLETION_LABEL_CANVAS_WIDTH = 1920;
       const ZXING_BARCODE_FORMAT_NAMES = {
         0: 'AZTEC', 1: 'CODABAR', 2: 'CODE_39', 3: 'CODE_93', 4: 'CODE_128',
         5: 'DATA_MATRIX', 6: 'EAN_8', 7: 'EAN_13', 8: 'ITF', 9: 'MAXICODE',
@@ -545,7 +545,7 @@
         const labelProfile = scanProfile_() === 'label';
         const config = labelProfile ? completionScanConfig_() : { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION };
         const shortSide = Math.min(videoWidth, videoHeight);
-        const sourceWidth = Math.floor(shortSide * config.widthFraction);
+        const sourceWidth = Math.floor((labelProfile ? videoWidth : shortSide) * config.widthFraction);
         const sourceHeight = Math.floor(shortSide * config.heightFraction);
         return { videoWidth, videoHeight, sourceWidth, sourceHeight, canvasWidth: canvas.width || 0, canvasHeight: canvas.height || 0 };
       }
@@ -1441,7 +1441,7 @@
         const labelProfile = scanProfile_() === 'label';
         const scanConfig = labelProfile ? completionScanConfig_() : { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION, shape: 'square' };
         const shortSide = Math.min(video.videoWidth, video.videoHeight);
-        const sourceWidth = Math.floor(shortSide * scanConfig.widthFraction);
+        const sourceWidth = Math.floor((labelProfile ? video.videoWidth : shortSide) * scanConfig.widthFraction);
         const sourceHeight = Math.floor(shortSide * scanConfig.heightFraction);
         if (!sourceWidth || !sourceHeight) return { value: '', decoderPath: 'none', sourceSide: 0, canvasSide: 0 };
         const targetWidth = labelProfile ? Math.min(COMPLETION_LABEL_CANVAS_WIDTH, sourceWidth) : Math.min(640, sourceWidth);
