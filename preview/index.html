@@ -327,6 +327,7 @@
       let zxingReader = null;
       let zxingReaderProfile = '';
       let zxingInitError = '';
+      let zxingHintStatus = '';
       let canvasSide = 0;
       let debugPerformanceEnabled = false;
       let cameraPerformance = null;
@@ -469,7 +470,7 @@
           perfOutput.textContent = [
             '計測待機中（スキャン履歴なし）',
             `BarcodeDetector: API ${camera.barcodeDetectorApiAvailable ? 'yes' : 'no'} / QR ${camera.barcodeDetectorQrSupported ? 'yes' : 'no'} / formats ${(camera.barcodeDetectorSupportedFormats || barcodeDetectorSupportedFormats || []).join(', ') || '—'}`,
-            `ZXing: ${camera.zxingAvailable || zxingReader ? 'loaded' : 'unavailable'}${camera.zxingInitError || zxingInitError ? ` / ${camera.zxingInitError || zxingInitError}` : ''}`,
+            `ZXing: ${camera.zxingAvailable || zxingReader ? 'loaded' : 'unavailable'}${camera.zxingInitError || zxingInitError ? ` / ${camera.zxingInitError || zxingInitError}` : ''}${zxingHintStatus ? ` / ${zxingHintStatus}` : ''}`,
             `試行方式: ${camera.scanScheduler || '—'}`,
             `映像: ${roi.videoWidth}x${roi.videoHeight} / ROI ${roi.sourceWidth}x${roi.sourceHeight} / canvas ${roi.canvasWidth}x${roi.canvasHeight}`,
             `ライブ試行: ${liveScan.attemptCount || 0}回 / 直近デコード ${formatMs(liveScan.decodeLastMs)}`,
@@ -1325,6 +1326,7 @@
         const zxing = window.ZXingBrowser || window.ZXing;
         if (!zxing || typeof zxing.BrowserMultiFormatReader !== 'function') {
           zxingInitError = 'グローバルまたはBrowserMultiFormatReaderが見つかりません';
+          zxingHintStatus = '';
           if (cameraPerformance) {
             cameraPerformance.zxingAvailable = false;
             cameraPerformance.zxingInitError = zxingInitError;
@@ -1333,19 +1335,25 @@
         }
         try {
           let hints = null;
+          zxingHintStatus = '';
           if (profile === 'label') {
             const hintTypes = zxing.DecodeHintType || (window.ZXing && window.ZXing.DecodeHintType);
             const barcodeFormats = zxing.BarcodeFormat || (window.ZXing && window.ZXing.BarcodeFormat);
             if (!hintTypes || !barcodeFormats || hintTypes.POSSIBLE_FORMATS === undefined || hintTypes.TRY_HARDER === undefined) {
-              throw new Error('ZXingの形式ヒントAPIが見つかりません');
+              zxingHintStatus = '形式ヒントを適用できません（全形式で試行中）';
+            } else {
+              const formats = ['CODABAR', 'CODE_128', 'ITF', 'CODE_39']
+                .map(name => barcodeFormats[name])
+                .filter(value => value !== undefined);
+              if (formats.length) {
+                hints = new Map();
+                hints.set(hintTypes.POSSIBLE_FORMATS, formats);
+                hints.set(hintTypes.TRY_HARDER, true);
+                zxingHintStatus = 'CODABAR/CODE_128/ITF/CODE_39 + TRY_HARDER';
+              } else {
+                zxingHintStatus = '伝票用形式を解決できません（全形式で試行中）';
+              }
             }
-            const formats = ['CODABAR', 'CODE_128', 'ITF', 'CODE_39']
-              .map(name => barcodeFormats[name])
-              .filter(value => value !== undefined);
-            if (!formats.length) throw new Error('伝票用バーコード形式を解決できません');
-            hints = new Map();
-            hints.set(hintTypes.POSSIBLE_FORMATS, formats);
-            hints.set(hintTypes.TRY_HARDER, true);
           }
           zxingReader = new zxing.BrowserMultiFormatReader(hints);
           if (typeof zxingReader.decodeFromCanvas !== 'function') {
@@ -1361,6 +1369,7 @@
           zxingReader = null;
           zxingReaderProfile = '';
           zxingInitError = error && error.message ? error.message : 'ZXing初期化失敗';
+          zxingHintStatus = '';
           if (cameraPerformance) {
             cameraPerformance.zxingAvailable = false;
             cameraPerformance.zxingInitError = zxingInitError;
