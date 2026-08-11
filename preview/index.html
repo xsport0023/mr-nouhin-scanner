@@ -333,6 +333,7 @@
       let activeScanPerformance = null;
       let performanceSequence = 0;
       let performanceHistory = [];
+      let performancePanelLastRenderedAt = 0;
       let lastRequestCompletedAt = null;
       const MAX_PRINT_REQUESTS = 1;
       let printJobs = [];
@@ -463,11 +464,15 @@
         if (!debugPerformanceEnabled) return;
         if (!performanceHistory.length) {
           const camera = cameraPerformance || {};
+          const roi = cameraRoiSnapshot_();
+          const liveScan = activeScanPerformance || {};
           perfOutput.textContent = [
             '計測待機中（スキャン履歴なし）',
             `BarcodeDetector: API ${camera.barcodeDetectorApiAvailable ? 'yes' : 'no'} / QR ${camera.barcodeDetectorQrSupported ? 'yes' : 'no'} / formats ${(camera.barcodeDetectorSupportedFormats || barcodeDetectorSupportedFormats || []).join(', ') || '—'}`,
             `ZXing: ${camera.zxingAvailable || zxingReader ? 'loaded' : 'unavailable'}${camera.zxingInitError || zxingInitError ? ` / ${camera.zxingInitError || zxingInitError}` : ''}`,
             `試行方式: ${camera.scanScheduler || '—'}`,
+            `映像: ${roi.videoWidth}x${roi.videoHeight} / ROI ${roi.sourceWidth}x${roi.sourceHeight} / canvas ${roi.canvasWidth}x${roi.canvasHeight}`,
+            `ライブ試行: ${liveScan.attemptCount || 0}回 / 直近デコード ${formatMs(liveScan.decodeLastMs)}`,
             `端末: ${camera.platform || navigator.platform || '—'} / ${camera.userAgent || navigator.userAgent || '—'}`
           ].join('\n');
           return;
@@ -532,6 +537,17 @@
           });
         }
         perfOutput.textContent = lines.join('\n');
+      }
+
+      function cameraRoiSnapshot_() {
+        const videoWidth = video.videoWidth || 0;
+        const videoHeight = video.videoHeight || 0;
+        const labelProfile = scanProfile_() === 'label';
+        const config = labelProfile ? completionScanConfig_() : { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION };
+        const shortSide = Math.min(videoWidth, videoHeight);
+        const sourceWidth = Math.floor(shortSide * config.widthFraction);
+        const sourceHeight = Math.floor(shortSide * config.heightFraction);
+        return { videoWidth, videoHeight, sourceWidth, sourceHeight, canvasWidth: canvas.width || 0, canvasHeight: canvas.height || 0 };
       }
 
       function setScanFeedback(active, message) {
@@ -1409,6 +1425,10 @@
             showToast(message, 'error');
           }
           if (generation === scanGeneration && result.value) handleScanValue_(result.value, result.decoderPath, result.barcodeFormat);
+          if (debugPerformanceEnabled && nowMs() - performancePanelLastRenderedAt >= 250) {
+            performancePanelLastRenderedAt = nowMs();
+            renderPerformancePanel();
+          }
         } finally {
           if (generation === scanGeneration) {
             decodeInFlight = false;
