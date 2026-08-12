@@ -228,16 +228,18 @@
   </section>
   <section id="completion-result-screen" class="screen" aria-label="発送完了確認">
     <div class="card"><h1>発送完了の確認</h1><p>実物伝票の印字と、画面の追跡番号を照合してください。</p>
-      <div class="completion-result">
-        <div id="completion-tracking-number" class="completion-tracking-number"></div>
-        <div class="completion-result-row"><span>読取生値</span><strong id="completion-result-raw-values">未読</strong></div>
+        <div class="completion-result">
+          <div id="completion-tracking-number" class="completion-tracking-number"></div>
+          <div id="completion-result-plan-row" class="completion-result-row" hidden><span>処理計画ID</span><strong id="completion-result-plan-id"></strong></div>
+          <div class="completion-result-row"><span>読取生値</span><strong id="completion-result-raw-values">未読</strong></div>
         <div class="completion-result-row"><span>注文番号</span><strong id="completion-result-orders"></strong></div>
         <div class="completion-result-row"><span>発送ID</span><strong id="completion-result-shipment">P4照合待ち</strong></div>
         <div class="completion-result-row"><span>運送会社</span><strong id="completion-result-carrier">P4照合待ち</strong></div>
         <div class="completion-result-row"><span>Trelloカード</span><strong id="completion-result-card">P4照合待ち</strong></div>
-      </div>
+        </div>
       <p id="completion-result-notice">P3/P4の照合結果を受け取るまで発送確定はできません。</p>
-      <div class="address-actions"><button id="completion-result-cancel" class="choice-button" type="button">戻る</button><button id="completion-confirm-button" class="choice-button ship" type="button" disabled>印字と一致・発送確定</button></div>
+      <div id="completion-status-details" class="warning-list" hidden></div>
+      <div class="address-actions"><button id="completion-result-cancel" class="choice-button" type="button">戻る</button><button id="completion-status-button" class="choice-button" type="button" hidden>結果を確認する（読み取り専用）</button><button id="completion-confirm-button" class="choice-button ship" type="button" disabled>印字と一致・発送確定</button></div>
     </div>
   </section>
   <canvas id="canvas"></canvas><div id="toast" role="status" aria-live="polite"></div>
@@ -1016,15 +1018,21 @@
         toast.textContent = message || '処理に失敗しました';
         toast.className = 'show ' + (type || '');
         if (toast.style) {
-          const activePanel = currentMode === 'shipping' ? document.getElementById('ship-controls')
-            : currentMode === 'print' ? document.getElementById('print-controls')
-            : null;
-          const rect = activePanel && typeof activePanel.getBoundingClientRect === 'function'
-            ? activePanel.getBoundingClientRect() : null;
-          const panelVisible = Boolean(activePanel && !activePanel.hidden && rect && rect.width > 0 && rect.height > 0);
-          if (panelVisible) {
+          // モードで決め打ちせず、現在見えている操作パネルを避ける。
+          // 操作モードの追加時に避難対象を足し忘れると、トーストが締める/確定ボタンへ重なる。
+          const panels = Array.from(document.querySelectorAll(
+            '#print-controls, #ship-controls, #completion-controls, .screen.active .address-actions'
+          ));
+          const visibleRects = panels.map(panel => {
+            if (!panel || panel.hidden || typeof panel.getBoundingClientRect !== 'function') return null;
+            const rect = panel.getBoundingClientRect();
+            return rect && rect.width > 0 && rect.height > 0 ? rect : null;
+          }).filter(Boolean);
+          if (visibleRects.length) {
+            // 最も上にある操作パネルより上へ出すと、同時に表示されたすべての操作を覆わない。
+            const top = Math.min(...visibleRects.map(rect => rect.top));
             const viewportHeight = typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : document.documentElement.clientHeight;
-            toast.style.bottom = `${Math.max(0, Math.round(viewportHeight - rect.top + 12))}px`;
+            toast.style.bottom = `${Math.max(0, Math.round(viewportHeight - top + 12))}px`;
           } else {
             toast.style.bottom = '';
           }
@@ -1941,6 +1949,7 @@
           measurement = error.performanceMeasurement || measurement;
           renderCompletionExecutionResult_({
             complete: false,
+            outcomeUnknown: true,
             // P5は外部更新の成否が不明になり得る。分類を示しても、ここで「再試行」を促してはいけない。
             error: error.failureCode === 'BAD_RESPONSE'
               ? `発送確定の応答を確認できませんでした（${badResponseKind_(error)}）。再実行せず、担当者へ確認してください。`
@@ -1955,11 +1964,14 @@
       function renderCompletionExecutionResult_(result) {
         const confirm = document.getElementById('completion-confirm-button');
         const notice = document.getElementById('completion-result-notice');
+        const statusButton = document.getElementById('completion-status-button');
         confirm.disabled = true;
+        renderCompletionPlanId_();
         showScreen('completion-result-screen');
 
         if (result.complete === true) {
           confirm.textContent = '発送確定済み';
+          statusButton.hidden = true;
           notice.textContent = result.notify === false
             ? '発送確定を完了しました。まとめ発送のため顧客通知は送信していません。'
             : '発送確定を完了しました。追跡情報の反映と顧客通知を完了しました。';
@@ -1968,11 +1980,123 @@
         }
 
         confirm.textContent = '要確認（再実行不可）';
+        // 外部更新を再送するボタンではない。保存済みの状態を読むだけで、
+        // 通信失敗時も何度でも確認できる。
+        statusButton.hidden = !completionPlanId;
+        if (result.outcomeUnknown === true) {
+          notice.textContent = '発送確定が完了したか確認できていません。外部処理は再実行せず、「結果を確認する（読み取り専用）」を押してください。';
+          showToast('発送確定が完了したか確認できていません。結果を確認してください。', 'warning');
+          return;
+        }
         const incomplete = Array.isArray(result.incomplete) ? result.incomplete : [];
         const details = incomplete.map(item => `注文 ${item.order_id}（第${item.phase}相: ${item.status}）`).join(' / ');
         notice.textContent = result.error
           || `発送確定が完了していない明細があります。再実行せず、担当者へ確認してください。${details ? ` ${details}` : ''}`;
         showToast('発送確定は完了していません。担当者へ確認してください。', 'error');
+      }
+
+      function renderCompletionPlanId_() {
+        const row = document.getElementById('completion-result-plan-row');
+        const value = document.getElementById('completion-result-plan-id');
+        if (!row || !value) return;
+        row.hidden = !completionPlanId;
+        value.textContent = completionPlanId || '';
+      }
+
+      function setCompletionStatusDetails_(items) {
+        const details = document.getElementById('completion-status-details');
+        if (!details) return;
+        details.textContent = '';
+        const list = Array.isArray(items) ? items : [];
+        details.hidden = list.length === 0;
+        list.forEach(item => {
+          const row = document.createElement('div');
+          const order = item.order_number || item.order_id || '注文不明';
+          const status = item.final_status || item.shopify_status || '未完了';
+          row.textContent = `${order}: ${status}${item.last_error ? ` / ${item.last_error}` : ''}`;
+          details.appendChild(row);
+        });
+      }
+
+      // P6: 保存済み計画と消込ログだけを読む。外部更新を再送しない。
+      async function checkCompletionStatus_() {
+        if (!completionPlanId) {
+          showToast('処理計画IDがないため結果を確認できません。最初から読み取り直してください。', 'warning');
+          return;
+        }
+        if (requestInFlight) {
+          showToast('結果を確認中です。完了するまでお待ちください。', 'warning');
+          return;
+        }
+        const button = document.getElementById('completion-status-button');
+        requestInFlight = true;
+        button.disabled = true;
+        button.textContent = '結果を確認中…';
+        showLoading('発送確定の結果を確認しています…\n読み取り専用です。外部処理は実行しません。');
+        let measurement = null;
+        try {
+          const request = buildApiRequest_({
+            action: 'ship_done_status', id_token: idToken, plan_id: completionPlanId
+          });
+          const result = await fetchJsonWithPerformance('ship_done_status', request.body, null, request.options);
+          const data = result.data || {};
+          measurement = result.measurement;
+          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
+          if (!data.ok) {
+            showScreen('completion-result-screen');
+            showToast(data.error || '結果を確認できませんでした。もう一度確認してください。', 'error');
+            finishRequestPerformance(measurement, 'api_error');
+            return;
+          }
+          renderCompletionPlanStatus_(data);
+          finishRequestPerformance(measurement, 'success');
+        } catch (error) {
+          measurement = error.performanceMeasurement || measurement;
+          showScreen('completion-result-screen');
+          showToast(requestFailureMessage_(error, '結果を確認できませんでした。もう一度確認してください。'), 'error');
+          finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
+        } finally {
+          requestInFlight = false;
+          button.disabled = false;
+          button.textContent = '結果を確認する（読み取り専用）';
+        }
+      }
+
+      function renderCompletionPlanStatus_(data) {
+        const confirm = document.getElementById('completion-confirm-button');
+        const notice = document.getElementById('completion-result-notice');
+        const statusButton = document.getElementById('completion-status-button');
+        completionPlanId = data.plan_id || completionPlanId;
+        renderCompletionPlanId_();
+        showScreen('completion-result-screen');
+        document.getElementById('completion-tracking-number').textContent = data.tracking_number || completionRawTrackingValue || '追跡番号不明';
+        confirm.disabled = true;
+
+        if (data.complete === true) {
+          confirm.textContent = '発送確定済み';
+          statusButton.hidden = true;
+          setCompletionStatusDetails_([]);
+          notice.textContent = data.notify === false
+            ? '発送確定は完了しています。まとめ発送のため顧客通知は送信していません。'
+            : '発送確定は完了しています。追跡情報の反映と顧客通知を完了しました。';
+          showToast('発送確定は完了しています。', 'success');
+          return;
+        }
+
+        statusButton.hidden = false;
+        if (data.attempted !== true) {
+          confirm.textContent = '未実行';
+          setCompletionStatusDetails_([]);
+          notice.textContent = '実行されていません。外部処理は起きていないため、最初から読み取り直せます。';
+          showToast('発送確定はまだ実行されていません。', 'warning');
+          return;
+        }
+
+        confirm.textContent = '要確認（一部完了）';
+        const incomplete = Array.isArray(data.incomplete) ? data.incomplete : [];
+        setCompletionStatusDetails_(incomplete);
+        notice.textContent = `一部だけ完了しています（${data.completed_count || 0}/${data.total || 0}件）。再実行せず、担当者へ確認してください。`;
+        showToast('一部だけ完了しています。担当者へ確認してください。', 'error');
       }
 
       function resetCompletionConfirmButton_() {
@@ -2036,6 +2160,9 @@
         document.getElementById('completion-result-card').textContent = cardNames.join(' / ') || result.cardName || 'P4照合待ち';
         renderCompletionRawValues_();
         const confirm = document.getElementById('completion-confirm-button');
+        document.getElementById('completion-status-button').hidden = true;
+        setCompletionStatusDetails_([]);
+        renderCompletionPlanId_();
         const ready = result.ok === true || result.readyForConfirmation === true;
         confirm.disabled = !ready;
         confirm.textContent = '印字と一致・発送確定';
@@ -2497,6 +2624,7 @@
         startCamera();
       });
       document.getElementById('completion-confirm-button').addEventListener('click', executeCompletionPlan_);
+      document.getElementById('completion-status-button').addEventListener('click', checkCompletionStatus_);
       document.getElementById('carrier-confirmation-back').addEventListener('click', () => showConsolidationScreen());
       document.getElementById('carrier-confirmation-submit').addEventListener('click', confirmCarrierSelection);
       document.getElementById('shipping-issues-back').addEventListener('click', () => {
