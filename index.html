@@ -295,6 +295,8 @@
       let completionPlanRequestId = '';
       let completionNotify = null;
       let completionCardsMissing = [];
+      // complete:true の結果を確認したときだけ、次の発送へ進める。
+      let completionCanStartNextShipment = false;
       let shippingItems = [];
       let shippingContext = null;
       let pendingFinalize = null;
@@ -1167,6 +1169,16 @@
       function startCompletionMode(consolidation) {
         currentMode = 'shipping-complete';
         completionConsolidation = consolidation;
+        resetCompletionShipmentState_();
+        initializeZxingReader_('label').then(() => renderPerformancePanel());
+        updateCameraMode();
+        startCamera().then(maybeShowInstallHint);
+      }
+
+      // 1発送分に紐づく状態をまとめて初期化する。
+      // 次の発送で前のplan_idや発送IDを照会・送信しないため、個別の画面遷移で
+      // 部分的に消すのではなく、モード開始と「次の発送へ」で必ずこの関数を通す。
+      function resetCompletionShipmentState_() {
         completionCarrier = '';
         completionStep = 'orders';
         completionOrders = [];
@@ -1182,8 +1194,17 @@
         completionPlanRequestId = '';
         completionNotify = null;
         completionCardsMissing = [];
+        completionCanStartNextShipment = false;
+        requestInFlight = false;
+        // 完了画面だけで隠した「戻る」を、次の発送の開始時には必ず復帰させる。
+        // P8が未保存を返した場合の「最初から読み取り直す」出口を残すため。
+        document.getElementById('completion-result-cancel').hidden = false;
         resetCompletionConfirmButton_();
-        initializeZxingReader_('label').then(() => renderPerformancePanel());
+      }
+
+      function startNextCompletionShipment_() {
+        if (!completionCanStartNextShipment) return;
+        resetCompletionShipmentState_();
         updateCameraMode();
         startCamera().then(maybeShowInstallHint);
       }
@@ -2018,12 +2039,17 @@
         const confirm = document.getElementById('completion-confirm-button');
         const notice = document.getElementById('completion-result-notice');
         const statusButton = document.getElementById('completion-status-button');
+        const cancelButton = document.getElementById('completion-result-cancel');
+        completionCanStartNextShipment = false;
         confirm.disabled = true;
         renderCompletionPlanId_();
         showScreen('completion-result-screen');
 
         if (result.complete === true) {
-          confirm.textContent = '発送確定済み';
+          completionCanStartNextShipment = true;
+          confirm.disabled = false;
+          confirm.textContent = '次の発送へ';
+          cancelButton.hidden = true;
           statusButton.hidden = true;
           notice.textContent = result.notify === false
             ? '発送確定を完了しました。まとめ発送のため顧客通知は送信していません。'
@@ -2032,6 +2058,7 @@
           return;
         }
 
+        cancelButton.hidden = false;
         confirm.textContent = '要確認（再実行不可）';
         // 外部更新を再送するボタンではない。保存済みの状態を読むだけで、
         // 通信失敗時も何度でも確認できる。
@@ -2068,6 +2095,7 @@
         const confirm = document.getElementById('completion-confirm-button');
         const notice = document.getElementById('completion-result-notice');
         const statusButton = document.getElementById('completion-status-button');
+        completionCanStartNextShipment = false;
         confirm.disabled = true;
         confirm.textContent = '計画の保存結果を確認してください';
         renderCompletionPlanId_();
@@ -2128,6 +2156,7 @@
         const confirm = document.getElementById('completion-confirm-button');
         const notice = document.getElementById('completion-result-notice');
         const statusButton = document.getElementById('completion-status-button');
+        completionCanStartNextShipment = false;
         completionPlanRequestId = data.plan_request_id || completionPlanRequestId;
         renderCompletionPlanRequestId_();
         showScreen('completion-result-screen');
@@ -2276,6 +2305,8 @@
         const confirm = document.getElementById('completion-confirm-button');
         const notice = document.getElementById('completion-result-notice');
         const statusButton = document.getElementById('completion-status-button');
+        const cancelButton = document.getElementById('completion-result-cancel');
+        completionCanStartNextShipment = false;
         completionPlanId = data.plan_id || completionPlanId;
         renderCompletionPlanId_();
         showScreen('completion-result-screen');
@@ -2283,7 +2314,10 @@
         confirm.disabled = true;
 
         if (data.complete === true) {
-          confirm.textContent = '発送確定済み';
+          completionCanStartNextShipment = true;
+          confirm.disabled = false;
+          confirm.textContent = '次の発送へ';
+          cancelButton.hidden = true;
           statusButton.hidden = true;
           setCompletionStatusDetails_([]);
           notice.textContent = data.notify === false
@@ -2293,6 +2327,7 @@
           return;
         }
 
+        cancelButton.hidden = false;
         statusButton.hidden = false;
         if (data.attempted !== true) {
           confirm.textContent = '未実行';
@@ -2359,6 +2394,7 @@
       }
 
       function renderCompletionResult_(result) {
+        completionCanStartNextShipment = false;
         document.getElementById('completion-tracking-number').textContent = result.tracking_display || result.tracking_number || result.trackingNumber || '読み取り値なし';
         const orders = Array.isArray(result.orders) && result.orders.length
           ? result.orders.map(order => order.order_number || order.order_id).join(' / ')
@@ -2370,6 +2406,7 @@
         document.getElementById('completion-result-card').textContent = cardNames.join(' / ') || result.cardName || 'P4照合待ち';
         renderCompletionRawValues_();
         const confirm = document.getElementById('completion-confirm-button');
+        document.getElementById('completion-result-cancel').hidden = false;
         document.getElementById('completion-status-button').hidden = true;
         setCompletionStatusDetails_([]);
         renderCompletionPlanId_();
@@ -2968,7 +3005,10 @@
         requestInFlight = false;
         startCamera();
       });
-      document.getElementById('completion-confirm-button').addEventListener('click', executeCompletionPlan_);
+      document.getElementById('completion-confirm-button').addEventListener('click', () => {
+        if (completionCanStartNextShipment) return startNextCompletionShipment_();
+        return executeCompletionPlan_();
+      });
       document.getElementById('completion-status-button').addEventListener('click', () => {
         // plan_idがあればP6（実行結果）、無ければP8（計画保存結果）を読む。
         return completionPlanId ? checkCompletionStatus_() : checkCompletionPlanRequestStatus_();
