@@ -88,7 +88,10 @@
     .ship-remove { flex:0 0 auto; width:28px; margin:0; padding:4px; border:1px solid #99f6e4; background:transparent; color:#ccfbf1; font-size:16px; line-height:1; }
     .ship-finalize { margin-top:10px; padding:10px; background:#14b8a6; color:#042f2e; }
     .completion-controls { position:absolute; left:12px; right:12px; bottom:calc(16px + env(safe-area-inset-bottom)); z-index:12; padding:12px; border:1px solid #60a5fa88; border-radius:16px; background:#102a4aee; pointer-events:auto; text-align:left; }
-    .completion-summary { display:flex; justify-content:space-between; align-items:center; gap:10px; color:#dbeafe; font-size:13px; }
+    .completion-progress { display:grid; gap:3px; padding:9px 10px; border:1px solid #93c5fd; border-radius:10px; background:#172554; }
+    .completion-progress span { color:#bfdbfe; font-size:13px; font-weight:700; }
+    .completion-progress strong { color:#fff; font-size:17px; line-height:1.35; }
+    .completion-summary { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:8px; color:#dbeafe; font-size:13px; }
     .completion-summary strong { font-size:18px; }
     .completion-list { max-height:130px; overflow:auto; margin-top:8px; display:flex; flex-direction:column; gap:5px; text-align:left; }
     .completion-item { padding:7px 9px; border-radius:8px; background:#1e3a5f; color:#eff6ff; font-size:12px; }
@@ -174,7 +177,8 @@
         <button id="ship-finalize-button" class="ship-finalize" type="button">ここで締める</button>
       </div>
       <div id="completion-controls" class="completion-controls" hidden>
-        <div class="completion-summary"><span id="completion-step-label">注文書QR</span><strong id="completion-count">0件</strong></div>
+        <div class="completion-progress" aria-live="polite"><span id="completion-step-label">手順 1/2</span><strong id="completion-next-instruction">次に注文書QRを読み取ってください</strong></div>
+        <div class="completion-summary"><span>読取済み</span><strong id="completion-count">0件</strong></div>
         <div id="completion-latest-reading" class="completion-latest-reading" aria-live="polite">直近の読取: 未読</div>
         <div id="completion-list" class="completion-list"></div>
         <div id="completion-candidates" class="completion-list" hidden></div>
@@ -499,6 +503,10 @@
           `ページ経過: ${formatMs(api.pageAgeMs)} / 前回完了から: ${formatMs(api.previousRequestGapMs)}`,
           `redirect: ${api.redirected ? 'yes' : 'no'} / final: ${api.finalHost || '—'}`,
           `応答: HTTP ${Number.isFinite(api.responseStatus) ? api.responseStatus : '—'} / ${api.responseContentType || 'type不明'} / ${Number.isFinite(api.responseTextLength) ? `${api.responseTextLength}文字` : '長さ—'}`,
+          ...(api.badResponseKind ? [
+            `不正応答: ${api.badResponseKind}`,
+            `本文先頭: ${api.responsePreviewOmitted ? '（個人情報保護のため非表示）' : (api.responsePreview || '（取得なし）')}`
+          ] : []),
           `trace: rid ${api.logicalRequestId || '—'} / ta ${Number.isFinite(api.transportAttempt) ? api.transportAttempt : '—'}`,
           `カメラ: getUserMedia ${formatMs(camera.getUserMediaMs)} / play ${formatMs(camera.videoPlayMs)} / detector ${formatMs(camera.detectorInitMs)} / ready ${formatMs(camera.cameraReadyMs)} / 初回試行可能 ${formatMs(camera.firstScanEligibleMs)}`,
           `映像: ${settings.width || scan.sourceWidth || 0}x${settings.height || scan.sourceHeight || 0} @${settings.frameRate || '—'}fps → ROI ${scan.sourceSide || 0}px → canvas ${scan.canvasSide || 0}px`,
@@ -507,11 +515,6 @@
           `ZXing: ${camera.zxingAvailable ? 'loaded' : 'unavailable'}${camera.zxingInitError ? ` / ${camera.zxingInitError}` : ''}`,
           `端末: ${camera.platform || '—'} / ${camera.userAgent || '—'}`
         ];
-        if (api.badResponseKind) {
-          lines.push(`不正応答: ${api.badResponseKind}`);
-          lines.push(`本文先頭: ${api.responsePreviewOmitted ? '（個人情報保護のため非表示）' : (api.responsePreview || '（取得なし）')}`);
-        }
-
         const marks = result.serverMarks || [];
         if (marks.length) {
           lines.push('--- server marks ---');
@@ -565,6 +568,49 @@
           preview: previewAllowed ? (preview || '（空文字列）') : '',
           previewOmitted: !previewAllowed,
           length: text.length
+        };
+      }
+
+      // JSONではない応答は、現場で表示する文言も原因分類に合わせる。
+      // 自動再送はしない。`api_only_do_get_text` でも、通信経路の異常が
+      // そのリクエストだけに限られる保証はなく、結果不明の書き込みを重ねない。
+      function badResponseMessage(measurement) {
+        const kind = measurement && measurement.badResponseKind;
+        if (kind === 'api_only_do_get_text') {
+          return '接続先がスキャナAPIではありません。画面を再読み込みしてから再試行してください。';
+        }
+        if (kind === 'html') {
+          return 'Googleのログイン画面またはエラー画面が返りました。画面を再読み込みしてから再試行してください。';
+        }
+        if (kind === 'empty') {
+          return 'サーバーから空の応答が返りました。少し待ってから再試行してください。';
+        }
+        return 'サーバー応答を確認できませんでした。再試行してください。';
+      }
+
+      function requestFailureMessage_(error, fallback) {
+        return error && error.failureCode === 'BAD_RESPONSE'
+          ? badResponseMessage(error.performanceMeasurement)
+          : fallback;
+      }
+
+      function badResponseKind_(error) {
+        return (error && error.performanceMeasurement && error.performanceMeasurement.badResponseKind) || 'non_json';
+      }
+
+      // すべてのAPI呼出に同じ追跡契約を付ける。GASの入口ログと端末診断で
+      // 一試行を確実に突き合わせるため、rid/taはURLと本文の両方へ載せる。
+      function buildApiRequest_(payload, trace = {}) {
+        const logicalRequestId = trace.logicalRequestId || createRequestId('req');
+        const transportAttempt = Number.isFinite(trace.transportAttempt) ? trace.transportAttempt : 1;
+        const requestUrl = new URL(GAS_URL);
+        requestUrl.searchParams.set('rid', logicalRequestId);
+        requestUrl.searchParams.set('ta', String(transportAttempt));
+        return {
+          body: new URLSearchParams({
+            payload: JSON.stringify({ ...payload, logical_request_id: logicalRequestId, transport_attempt: transportAttempt })
+          }),
+          options: { url: requestUrl.toString(), logicalRequestId, transportAttempt }
         };
       }
 
@@ -890,7 +936,7 @@
           job.state = 'error';
           job.error_code = badResponse ? 'BAD_RESPONSE' : 'NETWORK_ERROR';
           job.error_message = badResponse
-            ? 'サーバー応答を確認できませんでした。再試行してください。'
+            ? badResponseMessage(measurement)
             : '通信に失敗しました。';
           job.completed_at = nowMs();
           if (measurement) measurement.scanToResultMs = job.completed_at - job.created_at;
@@ -1142,11 +1188,13 @@
         finalizeTransportAttempt = 0;
         updateCameraMode();
         showLoading('発送準備の情報を取得しています…');
+        let measurement = null;
         try {
-          const body = new URLSearchParams({ payload: JSON.stringify({ action: 'ship_prep_context', id_token: idToken }) });
-          const result = await fetchJsonWithPerformance('ship_prep_context', body, null);
+          const request = buildApiRequest_({ action: 'ship_prep_context', id_token: idToken });
+          const result = await fetchJsonWithPerformance('ship_prep_context', request.body, null, request.options);
           const data = result.data;
-          if (handleAuthError(data)) return;
+          measurement = result.measurement;
+          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
           if (!data.ok) throw new Error(data.error || '発送準備の営業日情報を取得できませんでした。');
           shippingContext = data;
           serverEpochAtSync = Date.parse(data.server_now);
@@ -1155,8 +1203,11 @@
           populateTeamDestinations(Array.isArray(data.team_destinations) ? data.team_destinations : []);
           await startCamera();
           maybeShowInstallHint();
+          finishRequestPerformance(measurement, 'success');
         } catch (error) {
-          showError(error.message || '発送準備の営業日情報を取得できませんでした。');
+          measurement = error.performanceMeasurement || measurement;
+          showError(requestFailureMessage_(error, error.message || '発送準備の営業日情報を取得できませんでした。'));
+          finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
         }
       }
 
@@ -1632,20 +1683,23 @@
       async function submitCompletionOrderScan_(orderId, sessionShipmentId) {
         requestInFlight = true;
         setScanFeedback(true, '注文QR読取済み・照会中…');
+        let measurement = null;
         try {
-          const body = new URLSearchParams({ payload: JSON.stringify({
+          const request = buildApiRequest_({
             action: 'ship_done_scan_order',
             id_token: idToken,
             mode: completionConsolidation === 'single_parcel' ? 'consolidated' : 'individual',
             order_id: orderId,
             session_shipment_id: sessionShipmentId || completionSessionShipmentId || null
-          }) });
-          const result = await fetchJsonWithPerformance('ship_done_scan_order', body, null);
+          });
+          const result = await fetchJsonWithPerformance('ship_done_scan_order', request.body, null, request.options);
           const data = result.data;
-          if (handleAuthError(data)) return;
+          measurement = result.measurement;
+          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
           if (!data.ok) {
             if (data.error_code === 'MULTIPLE_SHIP_PREP') renderCompletionCandidates_(data.candidates || [], orderId);
             showToast(data.error || '注文を発送完了の対象にできません。', 'error');
+            finishRequestPerformance(measurement, 'api_error');
             return;
           }
           completionSessionShipmentId = data.shipment_id || completionSessionShipmentId;
@@ -1658,8 +1712,11 @@
           renderCompletionControls_();
           if (completionConsolidation === 'individual') beginCompletionLabelStep_();
           else showToast(`${data.order_number || orderId}を追加しました。`, 'success');
+          finishRequestPerformance(measurement, 'success');
         } catch (error) {
-          showToast('注文照会に失敗しました。もう一度お試しください。', 'error');
+          measurement = error.performanceMeasurement || measurement;
+          showToast(requestFailureMessage_(error, '注文照会に失敗しました。もう一度お試しください。'), 'error');
+          finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
         } finally {
           requestInFlight = false;
           setScanFeedback(false);
@@ -1745,12 +1802,12 @@
         if (completionProbeInFlight || !value) return;
         completionProbeInFlight = true;
         try {
-          const body = new URLSearchParams({ payload: JSON.stringify({
+          const request = buildApiRequest_({
             action: 'ship_done_probe',
             id_token: idToken,
             label_values: [value]
-          }) });
-          const result = await fetchJsonWithPerformance('ship_done_probe', body, null);
+          });
+          const result = await fetchJsonWithPerformance('ship_done_probe', request.body, null, request.options);
           const data = result.data || {};
           if (data.status === 'OK') {
             completionProbeNoCandidateCount = 0;
@@ -1789,21 +1846,25 @@
           requestInFlight = false;
           return;
         }
+        let measurement = null;
         try {
-          const body = new URLSearchParams({ payload: JSON.stringify({
+          showLoading('伝票を照合しています…');
+          const request = buildApiRequest_({
             action: 'ship_done_plan',
             id_token: idToken,
             mode: completionConsolidation === 'single_parcel' ? 'consolidated' : 'individual',
             shipment_id: completionSessionShipmentId,
             order_ids: completionOrders.map(item => item.orderId),
             label_values: completionLabelValues
-          }) });
-          const result = await fetchJsonWithPerformance('ship_done_plan', body, null);
+          });
+          const result = await fetchJsonWithPerformance('ship_done_plan', request.body, null, request.options);
           const data = result.data;
-          if (handleAuthError(data)) return;
+          measurement = result.measurement;
+          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
           if (!data.ok) {
             renderCompletionResult_({ ok: false, error: data.error || '伝票を照合できませんでした。' });
             showScreen('completion-result-screen');
+            finishRequestPerformance(measurement, 'api_error');
             return;
           }
           completionPlanId = data.plan_id || '';
@@ -1812,9 +1873,12 @@
           completionRawTrackingValue = data.tracking_number || '';
           renderCompletionResult_(data);
           showScreen('completion-result-screen');
+          finishRequestPerformance(measurement, 'success');
         } catch (error) {
-          renderCompletionResult_({ ok: false, error: '伝票照合に失敗しました。' });
+          measurement = error.performanceMeasurement || measurement;
+          renderCompletionResult_({ ok: false, error: requestFailureMessage_(error, '伝票照合に失敗しました。') });
           showScreen('completion-result-screen');
+          finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
         } finally {
           requestInFlight = false;
         }
@@ -1844,18 +1908,22 @@
         completionConfirmedTracking = completionRawTrackingValue;
         confirm.disabled = true;
         confirm.textContent = '発送確定中…';
+        showLoading('発送確定を処理しています…\nShopify・追跡情報・顧客通知を確認中です。');
 
+        let measurement = null;
         try {
-          const body = new URLSearchParams({ payload: JSON.stringify({
+          const request = buildApiRequest_({
             action: 'ship_done_execute',
             id_token: idToken,
             plan_id: completionPlanId,
             confirmed_tracking: completionConfirmedTracking
-          }) });
-          const result = await fetchJsonWithPerformance('ship_done_execute', body, null);
+          });
+          const result = await fetchJsonWithPerformance('ship_done_execute', request.body, null, request.options);
           const data = result.data;
+          measurement = result.measurement;
           if (handleAuthError(data)) {
             resetCompletionConfirmButton_();
+            finishRequestPerformance(measurement, 'auth_error');
             return;
           }
 
@@ -1864,14 +1932,21 @@
               complete: false,
               error: data.error || '発送確定を実行できませんでした。'
             });
+            finishRequestPerformance(measurement, 'api_error');
             return;
           }
           renderCompletionExecutionResult_(data);
+          finishRequestPerformance(measurement, data.complete === true ? 'success' : 'incomplete');
         } catch (error) {
+          measurement = error.performanceMeasurement || measurement;
           renderCompletionExecutionResult_({
             complete: false,
-            error: '発送確定の通信に失敗しました。再実行せず、担当者へ確認してください。'
+            // P5は外部更新の成否が不明になり得る。分類を示しても、ここで「再試行」を促してはいけない。
+            error: error.failureCode === 'BAD_RESPONSE'
+              ? `発送確定の応答を確認できませんでした（${badResponseKind_(error)}）。再実行せず、担当者へ確認してください。`
+              : '発送確定の通信に失敗しました。再実行せず、担当者へ確認してください。'
           });
+          finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
         } finally {
           requestInFlight = false;
         }
@@ -1881,6 +1956,7 @@
         const confirm = document.getElementById('completion-confirm-button');
         const notice = document.getElementById('completion-result-notice');
         confirm.disabled = true;
+        showScreen('completion-result-screen');
 
         if (result.complete === true) {
           confirm.textContent = '発送確定済み';
@@ -1907,17 +1983,22 @@
 
       function renderCompletionControls_() {
         const label = document.getElementById('completion-step-label');
+        const nextInstruction = document.getElementById('completion-next-instruction');
         const count = document.getElementById('completion-count');
         const list = document.getElementById('completion-list');
         const candidates = document.getElementById('completion-candidates');
         const close = document.getElementById('completion-close-orders');
         const closeLabel = document.getElementById('completion-close-label');
-        if (!label || !count || !list || !close || !closeLabel) return;
+        if (!label || !nextInstruction || !count || !list || !close || !closeLabel) return;
         const latest = document.getElementById('completion-latest-reading');
         if (latest) latest.textContent = `直近の読取: ${formatCompletionReading_(completionLabelReadings[completionLabelReadings.length - 1])}`;
-        label.textContent = completionStep === 'label'
-          ? (completionConsolidation === 'single_parcel' ? 'まとめ発送 / 伝票' : '個別発送 / 伝票')
-          : (completionConsolidation === 'single_parcel' ? 'まとめ発送 / 注文書QR' : '個別発送 / 注文書QR');
+        const shippingKind = completionConsolidation === 'single_parcel' ? 'まとめ発送' : '個別発送';
+        label.textContent = completionStep === 'label' ? `${shippingKind} / 手順 2/2` : `${shippingKind} / 手順 1/2`;
+        nextInstruction.textContent = completionStep === 'label'
+          ? '次に運送会社の伝票バーコードを読み取ってください'
+          : (completionConsolidation === 'single_parcel'
+            ? '次に注文書QRを読み取ってください。全件を読んだら「注文スキャンを締める」を押します。'
+            : '次に注文書QRを1件読み取ってください。続けて伝票バーコードを読み取ります。');
         count.textContent = `${completionOrders.length}件`;
         list.textContent = '';
         completionOrders.forEach(item => {
@@ -1930,7 +2011,7 @@
         closeLabel.hidden = completionStep !== 'label';
         if (completionStep === 'label') {
           count.textContent = `${completionLabelValues.length}個の値`;
-          label.textContent = `${completionConsolidation === 'single_parcel' ? 'まとめ発送' : '個別発送'} / 伝票`;
+          label.textContent = `${shippingKind} / 手順 2/2`;
           list.textContent = '';
           completionLabelValues.forEach(value => {
             const row = document.createElement('div');
@@ -1981,12 +2062,12 @@
         let measurement = null;
         try {
           const clientDispatchedAt = adjustedIsoNow();
-          const body = new URLSearchParams({ payload: JSON.stringify({
+          const request = buildApiRequest_({
             action: 'ship_prep_scan', order_id: orderId, id_token: idToken,
             scan_accepted_at: (scanMetrics && scanMetrics.scanAcceptedAt) || clientDispatchedAt,
             client_dispatched_at: clientDispatchedAt
-          }) });
-          const result = await fetchJsonWithPerformance('ship_prep_scan', body, scanMetrics);
+          });
+          const result = await fetchJsonWithPerformance('ship_prep_scan', request.body, scanMetrics, request.options);
           const data = result.data;
           measurement = result.measurement;
           if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
@@ -2009,9 +2090,10 @@
           finishRequestPerformance(measurement, 'success');
         } catch (error) {
           measurement = error.performanceMeasurement || measurement;
-          showToast('通信に失敗しました。もう一度お試しください。', 'error');
+          const badResponse = error.failureCode === 'BAD_RESPONSE';
+          showToast(requestFailureMessage_(error, '通信に失敗しました。もう一度お試しください。'), 'error');
           returnToCamera();
-          finishRequestPerformance(measurement, 'network_error');
+          finishRequestPerformance(measurement, badResponse ? 'bad_response' : 'network_error');
         }
       }
 
@@ -2321,14 +2403,14 @@
         let measurement = null;
         try {
           finalizeTransportAttempt += 1;
-          const body = new URLSearchParams({ payload: JSON.stringify({
+          const request = buildApiRequest_({
             action: 'ship_prep_finalize', id_token: idToken, finalize_request_id: finalizeRequestId,
             transport_attempt: finalizeTransportAttempt, consolidation, items,
             ...(confirmedCarrier ? { confirmed_carrier: confirmedCarrier } : {}),
             ...(destination ? { consolidated_destination: destination } : {}),
             ...(Object.keys(issueResolutions).length ? { issue_resolutions: issueResolutions } : {})
-          }) });
-          const result = await fetchJsonWithPerformance('ship_prep_finalize', body, null);
+          }, { logicalRequestId: finalizeRequestId, transportAttempt: finalizeTransportAttempt });
+          const result = await fetchJsonWithPerformance('ship_prep_finalize', request.body, null, request.options);
           const data = result.data;
           measurement = result.measurement;
           if (handleAuthError(data)) { finalizeInFlight = false; finishRequestPerformance(measurement, 'auth_error'); return; }
@@ -2368,9 +2450,10 @@
           measurement = error.performanceMeasurement || measurement;
           finalizeInFlight = false;
           requestInFlight = false;
-          showToast('通信に失敗しました。もう一度お試しください。', 'error');
+          const badResponse = error.failureCode === 'BAD_RESPONSE';
+          showToast(requestFailureMessage_(error, '通信に失敗しました。もう一度お試しください。'), 'error');
           showScreen('team-destination-screen');
-          finishRequestPerformance(measurement, 'network_error');
+          finishRequestPerformance(measurement, badResponse ? 'bad_response' : 'network_error');
         }
       }
 
