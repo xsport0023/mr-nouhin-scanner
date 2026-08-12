@@ -165,7 +165,7 @@
       <div class="topbar"><span class="mode-dot"></span><span id="camera-title" class="title">印刷モード</span><span id="camera-subtitle" class="subtitle">QRをかざしてください</span></div>
       <div id="scan-frame" class="scan-frame"><span class="corner br"></span><span class="corner bl"></span><span class="scan-line"></span><span id="scan-feedback" class="scan-feedback" role="status" aria-live="polite">QR読取済み・照会中…</span></div>
       <div id="camera-hint" class="hint">スキャンすると自動で印刷タグを付けます</div>
-      <aside id="perf-panel" aria-label="速度計測結果" hidden><strong>速度計測（端末内のみ）</strong><pre id="perf-output">計測待機中</pre></aside>
+      <aside id="perf-panel" aria-label="速度計測結果" hidden><strong>速度計測（端末内のみ）</strong><pre id="perf-output">計測待機中</pre><div class="address-actions"><button id="perf-copy-button" class="choice-button" type="button">診断結果をコピー</button><button id="perf-clear-button" class="choice-button" type="button">診断データを消去</button></div></aside>
       <div id="print-controls" class="print-controls" hidden>
         <div id="print-summary" class="print-summary">受付 <strong>0</strong> / 完了 0 / 待ち 0 / 処理中 0 / エラー 0</div>
         <div id="print-complete" class="print-complete"></div>
@@ -265,6 +265,8 @@
       const perfToggle = document.getElementById('perf-toggle');
       const perfPanel = document.getElementById('perf-panel');
       const perfOutput = document.getElementById('perf-output');
+      const perfCopyButton = document.getElementById('perf-copy-button');
+      const perfClearButton = document.getElementById('perf-clear-button');
       let stream = null;
       let scanning = false;
       let requestInFlight = false;
@@ -342,7 +344,11 @@
       let activeScanPerformance = null;
       let performanceSequence = 0;
       let performanceHistory = [];
+      let performanceSamples = [];
       let performancePanelLastRenderedAt = 0;
+      const PERF_ENABLED_STORAGE_KEY = 'scannerPerformanceEnabledV1';
+      const PERF_SAMPLES_STORAGE_KEY = 'scannerPerformanceSamplesV1';
+      const PERF_SAMPLE_LIMIT = 200;
       let lastRequestCompletedAt = null;
       const MAX_PRINT_REQUESTS = 1;
       let printJobs = [];
@@ -363,6 +369,99 @@
 
       function formatMs(value) {
         return Number.isFinite(value) ? `${Math.round(value)}ms` : '—';
+      }
+
+      function loadPerformanceDiagnostics_() {
+        try {
+          debugPerformanceEnabled = localStorage.getItem(PERF_ENABLED_STORAGE_KEY) === '1';
+          perfToggle.checked = debugPerformanceEnabled;
+          const saved = JSON.parse(localStorage.getItem(PERF_SAMPLES_STORAGE_KEY) || '[]');
+          performanceSamples = Array.isArray(saved) ? saved.filter(item => item && item.schemaVersion === 1).slice(0, PERF_SAMPLE_LIMIT) : [];
+        } catch (error) {
+          performanceSamples = [];
+          debugPerformanceEnabled = false;
+          perfToggle.checked = false;
+        }
+      }
+
+      function diagnosticSample_(result) {
+        const api = result.api || {};
+        return {
+          schemaVersion: 1,
+          capturedAt: new Date().toISOString(),
+          action: result.action,
+          outcome: result.outcome,
+          api: {
+            fetchRttMs: api.fetchRttMs, headersMs: api.headersMs, bodyDownloadMs: api.bodyDownloadMs,
+            serverTotalMs: api.serverTotalMs, transportOverheadMs: api.transportOverheadMs,
+            timeoutMs: api.timeoutMs, timedOut: api.timedOut === true, failureCode: api.failureCode || '',
+            transportAttempt: api.transportAttempt, responseStatus: api.responseStatus
+          },
+          render: { jsonAndRenderMs: result.jsonAndRenderMs, totalMs: result.totalMs },
+          scan: { detectWaitMs: result.scan && result.scan.detectWaitMs, feedbackPaintMs: result.scan && result.scan.feedbackPaintMs },
+          serverMarks: (result.serverMarks || []).map(mark => ({ label: mark.label, at: mark.at }))
+        };
+      }
+
+      function savePerformanceSample_(result) {
+        if (!debugPerformanceEnabled) return;
+        performanceSamples.unshift(diagnosticSample_(result));
+        performanceSamples = performanceSamples.slice(0, PERF_SAMPLE_LIMIT);
+        try { localStorage.setItem(PERF_SAMPLES_STORAGE_KEY, JSON.stringify(performanceSamples)); } catch (error) { /* 診断保存の失敗で業務を止めない */ }
+      }
+
+      function percentile_(values, fraction) {
+        const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+        if (!sorted.length) return null;
+        return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)];
+      }
+
+      function transportStatus_(outcome) {
+        if (['success', 'already_tagged', 'duplicate', 'incomplete', 'api_error', 'auth_error'].includes(outcome)) return 'reached';
+        if (['network_error', 'client_timeout', 'bad_response'].includes(outcome)) return 'not_reached';
+        return 'unknown';
+      }
+
+      function summarizePerformanceSamples_() {
+        const groups = new Map();
+        performanceSamples.filter(item => item.action !== 'ship_done_probe').forEach(item => {
+          const group = groups.get(item.action) || { action: item.action, samples: [] };
+          group.samples.push(item); groups.set(item.action, group);
+        });
+        return [...groups.values()].sort((a, b) => a.action.localeCompare(b.action)).map(group => {
+          const reached = group.samples.filter(item => transportStatus_(item.outcome) === 'reached');
+          const notReached = group.samples.filter(item => transportStatus_(item.outcome) === 'not_reached').length;
+          const unknown = group.samples.length - reached.length - notReached;
+          const rtt = reached.map(item => item.api && item.api.fetchRttMs);
+          const total = reached.map(item => item.render && item.render.totalMs);
+          return {
+            action: group.action, n: group.samples.length, reached: reached.length, notReached, unknown,
+            clientTimeout: group.samples.filter(item => item.outcome === 'client_timeout').length,
+            rttN: rtt.filter(Number.isFinite).length, totalN: total.filter(Number.isFinite).length,
+            p50RttMs: percentile_(rtt, 0.5), p95RttMs: percentile_(rtt, 0.95),
+            p50TotalMs: percentile_(total, 0.5), p95TotalMs: percentile_(total, 0.95),
+            outcomes: group.samples.reduce((out, item) => { out[item.outcome] = (out[item.outcome] || 0) + 1; return out; }, {})
+          };
+        });
+      }
+
+      function performanceSummaryMarkdown_() {
+        const rows = summarizePerformanceSamples_();
+        const lines = ['# A-10 Scanner performance summary', `samples: ${performanceSamples.length}`, '', '| action | n | 到達率 | 未到達率 | p50 RTT | p95 RTT | p50 total | p95 total | timeout |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|'];
+        rows.forEach(row => {
+          const percent = count => `${((count / row.n) * 100).toFixed(1)}%`;
+          lines.push(`| ${row.action} | ${row.n} | ${percent(row.reached)} | ${percent(row.notReached)} | ${formatMs(row.p50RttMs)} (到達${row.rttN}) | ${formatMs(row.p95RttMs)}${row.rttN < 5 ? ` (n=${row.rttN},参考)` : ''} | ${formatMs(row.p50TotalMs)} (到達${row.totalN}) | ${formatMs(row.p95TotalMs)}${row.totalN < 5 ? ` (n=${row.totalN},参考)` : ''} | ${row.clientTimeout} |`);
+          lines.push(`  - outcomes: ${Object.entries(row.outcomes).map(([key, value]) => `${key}=${value}`).join(', ')}`);
+        });
+        return lines.join('\n');
+      }
+
+      function appendPerformanceSummaryLines_(lines) {
+        if (!performanceSamples.length) return;
+        lines.push('--- この端末の観測（probe除外） ---');
+        summarizePerformanceSamples_().forEach(row => {
+          lines.push(`${row.action}: n=${row.n} 到達${row.reached}/${row.n} 未到達${row.notReached}/${row.n} 未分類=${row.unknown} timeout=${row.clientTimeout} p50/p95往復 ${formatMs(row.p50RttMs)}/${formatMs(row.p95RttMs)}（到達${row.rttN}${row.rttN < 5 ? '・p95参考' : ''}）`);
+        });
       }
 
       function waitForNextPaint() {
@@ -475,7 +574,7 @@
           const camera = cameraPerformance || {};
           const roi = cameraRoiSnapshot_();
           const liveScan = activeScanPerformance || {};
-          perfOutput.textContent = [
+          const lines = [
             '計測待機中（スキャン履歴なし）',
             `BarcodeDetector: API ${camera.barcodeDetectorApiAvailable ? 'yes' : 'no'} / QR ${camera.barcodeDetectorQrSupported ? 'yes' : 'no'} / formats ${(camera.barcodeDetectorSupportedFormats || barcodeDetectorSupportedFormats || []).join(', ') || '—'}`,
             `ZXing: ${camera.zxingAvailable || zxingReader ? 'loaded' : 'unavailable'}${camera.zxingInitError || zxingInitError ? ` / ${camera.zxingInitError || zxingInitError}` : ''}${zxingHintStatus ? ` / ${zxingHintStatus}` : ''}`,
@@ -483,7 +582,9 @@
             `映像: ${roi.videoWidth}x${roi.videoHeight} / ROI ${roi.sourceWidth}x${roi.sourceHeight} / canvas ${roi.canvasWidth}x${roi.canvasHeight}`,
             `ライブ試行: ${liveScan.attemptCount || 0}回 / 直近デコード ${formatMs(liveScan.decodeLastMs)}`,
             `端末: ${camera.platform || navigator.platform || '—'} / ${camera.userAgent || navigator.userAgent || '—'}`
-          ].join('\n');
+          ];
+          appendPerformanceSummaryLines_(lines);
+          perfOutput.textContent = lines.join('\n');
           return;
         }
 
@@ -544,6 +645,7 @@
             lines.push(`#${item.sequence} 検出${formatMs(item.scan && item.scan.detectWaitMs)} / 往復${formatMs(item.api && item.api.fetchRttMs)} / server${formatMs(item.api && item.api.serverTotalMs)} / 全体${formatMs(item.totalMs)}`);
           });
         }
+        appendPerformanceSummaryLines_(lines);
         perfOutput.textContent = lines.join('\n');
       }
 
@@ -818,6 +920,7 @@
           };
           performanceHistory.unshift(result);
           performanceHistory = performanceHistory.slice(0, 3);
+          savePerformanceSample_(result);
           lastRequestCompletedAt = paintedAt;
           renderPerformancePanel();
         });
@@ -3084,8 +3187,26 @@
       });
       perfToggle.addEventListener('change', () => {
         debugPerformanceEnabled = perfToggle.checked;
+        try { localStorage.setItem(PERF_ENABLED_STORAGE_KEY, debugPerformanceEnabled ? '1' : '0'); } catch (error) { /* 保存不可でも診断表示は続ける */ }
         renderPerformancePanel();
       });
+      perfCopyButton.addEventListener('click', async () => {
+        const text = performanceSummaryMarkdown_();
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(text);
+          else throw new Error('clipboard unavailable');
+          showToast('診断結果をコピーしました。', 'success');
+        } catch (error) {
+          showToast('コピーできませんでした。Safariの共有/コピーを許可して再試行してください。', 'warning');
+        }
+      });
+      perfClearButton.addEventListener('click', () => {
+        if (!window.confirm('この端末の診断データを消去しますか？')) return;
+        performanceSamples = [];
+        try { localStorage.removeItem(PERF_SAMPLES_STORAGE_KEY); } catch (error) { /* 表示だけは消去する */ }
+        renderPerformancePanel();
+      });
+      loadPerformanceDiagnostics_();
       initializeGoogleSignIn();
     })();
   </script>
