@@ -19,10 +19,13 @@
   <style>
     :root { --mode-color:#e879f9; --bg:#090b12; --surface:#171b28; --text:#f5f7ff; --muted:#a6aec4; --danger:#ff6262; --ok:#35d58a; --warn:#f5b84b; }
     * { box-sizing:border-box; }
+    /* class/ID の display 指定より hidden 属性を必ず優先する。 */
+    [hidden] { display:none !important; }
     html, body { width:100%; height:100%; margin:0; overflow:hidden; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; }
     .screen { position:fixed; inset:0; display:none; flex-direction:column; align-items:center; overflow-y:auto; -webkit-overflow-scrolling:touch; }
     .screen.active { display:flex; }
     .screen.screen-transition-locked { pointer-events:none; }
+    #home-button { position:fixed; z-index:30; top:calc(10px + env(safe-area-inset-top)); right:10px; width:auto; margin:0; padding:9px 12px; border:1px solid #7180a5; border-radius:10px; background:#171b28ee; color:#fff; font-size:13px; }
     #camera-screen { background:#000; overflow:hidden; }
     #video { width:100%; height:100%; object-fit:cover; }
     .camera-overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; pointer-events:none; }
@@ -135,7 +138,9 @@
         <button id="ship-mode-button" class="choice-button ship" type="button">発送準備</button>
         <button id="completion-mode-button" class="choice-button ship" type="button">納品(お渡し・発送)</button>
       </div>
-      <label class="debug-option"><input id="perf-toggle" type="checkbox">速度計測を表示</label>
+      <label class="debug-option"><input id="perf-toggle" type="checkbox">速度を計測する</label>
+      <label class="debug-option"><input id="perf-display-toggle" type="checkbox">計測結果を表示する</label>
+      <div id="perf-actions" class="choice-list" hidden><button id="perf-copy-button" class="choice-button" type="button">診断結果をコピー</button><button id="perf-clear-button" class="choice-button" type="button">診断データを消去</button></div>
     </div>
   </section>
   <section id="carrier-screen" class="screen" aria-label="発送方法選択">
@@ -146,8 +151,8 @@
       </div>
     </div>
   </section>
-  <section id="completion-mode-screen" class="screen" aria-label="発送完了方法選択">
-    <div class="card"><h1>発送完了</h1><p>発送方法を選び、注文書QRと実物伝票を対応させます。</p>
+  <section id="completion-mode-screen" class="screen" aria-label="納品方法選択">
+    <div class="card"><h1>納品(お渡し・発送)</h1><p>納品方法を選び、注文書QRと実物伝票を対応させます。</p>
       <div class="choice-list">
         <button id="completion-individual-button" class="choice-button ship" type="button">個別発送</button>
         <button id="completion-single-parcel-button" class="choice-button ship" type="button">まとめ発送</button>
@@ -165,7 +170,7 @@
       <div class="topbar"><span class="mode-dot"></span><span id="camera-title" class="title">印刷モード</span><span id="camera-subtitle" class="subtitle">QRをかざしてください</span></div>
       <div id="scan-frame" class="scan-frame"><span class="corner br"></span><span class="corner bl"></span><span class="scan-line"></span><span id="scan-feedback" class="scan-feedback" role="status" aria-live="polite">QR読取済み・照会中…</span></div>
       <div id="camera-hint" class="hint">スキャンすると自動で印刷タグを付けます</div>
-      <aside id="perf-panel" aria-label="速度計測結果" hidden><strong>速度計測（端末内のみ）</strong><pre id="perf-output">計測待機中</pre><div class="address-actions"><button id="perf-copy-button" class="choice-button" type="button">診断結果をコピー</button><button id="perf-clear-button" class="choice-button" type="button">診断データを消去</button></div></aside>
+      <aside id="perf-panel" aria-label="速度計測結果" hidden><strong>速度計測（端末内のみ）</strong><pre id="perf-output">計測待機中</pre></aside>
       <div id="print-controls" class="print-controls" hidden>
         <div id="print-summary" class="print-summary">受付 <strong>0</strong> / 完了 0 / 待ち 0 / 処理中 0 / エラー 0</div>
         <div id="print-complete" class="print-complete"></div>
@@ -229,8 +234,8 @@
   <section id="ship-prep-status-screen" class="screen" aria-label="発送準備確定の結果確認">
     <div class="card"><h1>発送準備確定の結果</h1><p id="ship-prep-status-notice">発送準備確定の結果を確認します。</p><div class="completion-result"><div class="completion-result-row"><span>確定リクエストID</span><strong id="ship-prep-status-id"></strong></div></div><div id="ship-prep-status-details" class="warning-list" hidden></div><div class="address-actions"><button id="ship-prep-status-retry" class="choice-button ship" type="button" hidden>同じ内容で再試行</button><button id="ship-prep-status-button" class="choice-button" type="button">結果を確認する（読み取り専用）</button></div></div>
   </section>
-  <section id="completion-result-screen" class="screen" aria-label="発送完了確認">
-    <div class="card"><h1>発送完了の確認</h1><p>実物伝票の印字と、画面の追跡番号を照合してください。</p>
+  <section id="completion-result-screen" class="screen" aria-label="納品確認">
+    <div class="card"><h1>納品の確認</h1><p>実物伝票の印字と、画面の追跡番号を照合してください。</p>
         <div class="completion-result">
           <div id="completion-tracking-number" class="completion-tracking-number"></div>
           <div id="completion-result-plan-row" class="completion-result-row" hidden><span>処理計画ID</span><strong id="completion-result-plan-id"></strong></div>
@@ -241,11 +246,12 @@
         <div class="completion-result-row"><span>運送会社</span><strong id="completion-result-carrier">P4照合待ち</strong></div>
         <div class="completion-result-row"><span>Trelloカード</span><strong id="completion-result-card">P4照合待ち</strong></div>
         </div>
-      <p id="completion-result-notice">P3/P4の照合結果を受け取るまで発送確定はできません。</p>
+      <p id="completion-result-notice">P3/P4の照合結果を受け取るまで納品確定はできません。</p>
       <div id="completion-status-details" class="warning-list" hidden></div>
-      <div class="address-actions"><button id="completion-result-cancel" class="choice-button" type="button">戻る</button><button id="completion-status-button" class="choice-button" type="button" hidden>結果を確認する（読み取り専用）</button><button id="completion-confirm-button" class="choice-button ship" type="button" disabled>印字と一致・発送確定</button></div>
+      <div class="address-actions"><button id="completion-result-cancel" class="choice-button" type="button">戻る</button><button id="completion-status-button" class="choice-button" type="button" hidden>結果を確認する（読み取り専用）</button><button id="completion-confirm-button" class="choice-button ship" type="button" disabled>印字と一致・納品確定</button></div>
     </div>
   </section>
+  <button id="home-button" type="button" hidden>処理モード選択</button>
   <canvas id="canvas"></canvas><div id="toast" role="status" aria-live="polite"></div>
   <aside id="install-hint" aria-label="ホーム画面への追加案内">
     <p>共有・メニューボタンから「ホーム画面に追加」を選ぶと、次回からすぐ起動できます。</p>
@@ -263,10 +269,13 @@
       const toast = document.getElementById('toast');
       const scanFrameElement = document.getElementById('scan-frame');
       const perfToggle = document.getElementById('perf-toggle');
+      const perfDisplayToggle = document.getElementById('perf-display-toggle');
+      const perfActions = document.getElementById('perf-actions');
       const perfPanel = document.getElementById('perf-panel');
       const perfOutput = document.getElementById('perf-output');
       const perfCopyButton = document.getElementById('perf-copy-button');
       const perfClearButton = document.getElementById('perf-clear-button');
+      const homeButton = document.getElementById('home-button');
       let stream = null;
       let scanning = false;
       let requestInFlight = false;
@@ -340,6 +349,7 @@
       let zxingHintStatus = '';
       let canvasSide = 0;
       let debugPerformanceEnabled = false;
+      let debugPerformanceVisible = false;
       let cameraPerformance = null;
       let activeScanPerformance = null;
       let performanceSequence = 0;
@@ -347,6 +357,7 @@
       let performanceSamples = [];
       let performancePanelLastRenderedAt = 0;
       const PERF_ENABLED_STORAGE_KEY = 'scannerPerformanceEnabledV1';
+      const PERF_VISIBLE_STORAGE_KEY = 'scannerPerformanceVisibleV1';
       const PERF_SAMPLES_STORAGE_KEY = 'scannerPerformanceSamplesV1';
       const PERF_SAMPLE_LIMIT = 200;
       let lastRequestCompletedAt = null;
@@ -374,13 +385,19 @@
       function loadPerformanceDiagnostics_() {
         try {
           debugPerformanceEnabled = localStorage.getItem(PERF_ENABLED_STORAGE_KEY) === '1';
+          debugPerformanceVisible = localStorage.getItem(PERF_VISIBLE_STORAGE_KEY) === '1';
           perfToggle.checked = debugPerformanceEnabled;
+          perfDisplayToggle.checked = debugPerformanceVisible;
+          perfActions.hidden = !debugPerformanceEnabled;
           const saved = JSON.parse(localStorage.getItem(PERF_SAMPLES_STORAGE_KEY) || '[]');
           performanceSamples = Array.isArray(saved) ? saved.filter(item => item && item.schemaVersion === 1).slice(0, PERF_SAMPLE_LIMIT) : [];
         } catch (error) {
           performanceSamples = [];
           debugPerformanceEnabled = false;
+          debugPerformanceVisible = false;
           perfToggle.checked = false;
+          perfDisplayToggle.checked = false;
+          perfActions.hidden = true;
         }
       }
 
@@ -433,12 +450,17 @@
           const notReached = group.samples.filter(item => transportStatus_(item.outcome) === 'not_reached').length;
           const unknown = group.samples.length - reached.length - notReached;
           const rtt = reached.map(item => item.api && item.api.fetchRttMs);
+          const server = reached.map(item => item.api && item.api.serverTotalMs);
+          const transport = reached.map(item => item.api && item.api.transportOverheadMs);
           const total = reached.map(item => item.render && item.render.totalMs);
           return {
             action: group.action, n: group.samples.length, reached: reached.length, notReached, unknown,
             clientTimeout: group.samples.filter(item => item.outcome === 'client_timeout').length,
             rttN: rtt.filter(Number.isFinite).length, totalN: total.filter(Number.isFinite).length,
+            serverN: server.filter(Number.isFinite).length, transportN: transport.filter(Number.isFinite).length,
             p50RttMs: percentile_(rtt, 0.5), p95RttMs: percentile_(rtt, 0.95),
+            p50ServerMs: percentile_(server, 0.5), p95ServerMs: percentile_(server, 0.95),
+            p50TransportMs: percentile_(transport, 0.5), p95TransportMs: percentile_(transport, 0.95),
             p50TotalMs: percentile_(total, 0.5), p95TotalMs: percentile_(total, 0.95),
             outcomes: group.samples.reduce((out, item) => { out[item.outcome] = (out[item.outcome] || 0) + 1; return out; }, {})
           };
@@ -447,10 +469,10 @@
 
       function performanceSummaryMarkdown_() {
         const rows = summarizePerformanceSamples_();
-        const lines = ['# A-10 Scanner performance summary', `samples: ${performanceSamples.length}`, '', '| action | n | 到達率 | 未到達率 | p50 RTT | p95 RTT | p50 total | p95 total | timeout |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|'];
+        const lines = ['# A-10 Scanner performance summary', `samples: ${performanceSamples.length}`, '', 'RTT = API往復。total = 結果表示まで（scan actionは読取開始からを含む）。', '', '| action | n | 到達率 | 未到達率 | p50 RTT | p95 RTT | p50 server | p95 server | p50 transport | p95 transport | p50 total | p95 total | timeout |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|'];
         rows.forEach(row => {
           const percent = count => `${((count / row.n) * 100).toFixed(1)}%`;
-          lines.push(`| ${row.action} | ${row.n} | ${percent(row.reached)} | ${percent(row.notReached)} | ${formatMs(row.p50RttMs)} (到達${row.rttN}) | ${formatMs(row.p95RttMs)}${row.rttN < 5 ? ` (n=${row.rttN},参考)` : ''} | ${formatMs(row.p50TotalMs)} (到達${row.totalN}) | ${formatMs(row.p95TotalMs)}${row.totalN < 5 ? ` (n=${row.totalN},参考)` : ''} | ${row.clientTimeout} |`);
+          lines.push(`| ${row.action} | ${row.n} | ${percent(row.reached)} | ${percent(row.notReached)} | ${formatMs(row.p50RttMs)} (到達${row.rttN}) | ${formatMs(row.p95RttMs)}${row.rttN < 5 ? ` (n=${row.rttN},参考)` : ''} | ${formatMs(row.p50ServerMs)} (n=${row.serverN}) | ${formatMs(row.p95ServerMs)}${row.serverN < 5 ? ` (n=${row.serverN},参考)` : ''} | ${formatMs(row.p50TransportMs)} (n=${row.transportN}) | ${formatMs(row.p95TransportMs)}${row.transportN < 5 ? ` (n=${row.transportN},参考)` : ''} | ${formatMs(row.p50TotalMs)} (到達${row.totalN}) | ${formatMs(row.p95TotalMs)}${row.totalN < 5 ? ` (n=${row.totalN},参考)` : ''} | ${row.clientTimeout} |`);
           lines.push(`  - outcomes: ${Object.entries(row.outcomes).map(([key, value]) => `${key}=${value}`).join(', ')}`);
         });
         return lines.join('\n');
@@ -460,7 +482,7 @@
         if (!performanceSamples.length) return;
         lines.push('--- この端末の観測（probe除外） ---');
         summarizePerformanceSamples_().forEach(row => {
-          lines.push(`${row.action}: n=${row.n} 到達${row.reached}/${row.n} 未到達${row.notReached}/${row.n} 未分類=${row.unknown} timeout=${row.clientTimeout} p50/p95往復 ${formatMs(row.p50RttMs)}/${formatMs(row.p95RttMs)}（到達${row.rttN}${row.rttN < 5 ? '・p95参考' : ''}）`);
+          lines.push(`${row.action}: n=${row.n} 到達${row.reached}/${row.n} 未到達${row.notReached}/${row.n} 未分類=${row.unknown} timeout=${row.clientTimeout} / RTT p50/p95 ${formatMs(row.p50RttMs)}/${formatMs(row.p95RttMs)}（n=${row.rttN}${row.rttN < 5 ? '・p95参考' : ''}）/ server ${formatMs(row.p50ServerMs)}/${formatMs(row.p95ServerMs)}（n=${row.serverN}${row.serverN < 5 ? '・p95参考' : ''}）/ transport ${formatMs(row.p50TransportMs)}/${formatMs(row.p95TransportMs)}（n=${row.transportN}${row.transportN < 5 ? '・p95参考' : ''}）`);
         });
       }
 
@@ -568,8 +590,8 @@
       }
 
       function renderPerformancePanel() {
-        perfPanel.hidden = !debugPerformanceEnabled;
-        if (!debugPerformanceEnabled) return;
+        perfPanel.hidden = !debugPerformanceEnabled || !debugPerformanceVisible;
+        if (!debugPerformanceEnabled || !debugPerformanceVisible) return;
         if (!performanceHistory.length) {
           const camera = cameraPerformance || {};
           const roi = cameraRoiSnapshot_();
@@ -850,7 +872,8 @@
 
       function requestTimeoutMs_(action) {
         if (action === 'ship_done_probe') return 3000;
-        if (action === 'ship_prep_finalize' || action === 'print') return 45000;
+        if (action === 'ship_prep_finalize') return 28000;
+        if (action === 'print') return 45000;
         if (action === 'ship_done_execute') return 60000;
         if (action === 'ship_done_plan') return 30000;
         return 8000;
@@ -1181,6 +1204,7 @@
         });
         const nextScreen = document.getElementById(id);
         nextScreen.classList.add('active');
+        homeButton.hidden = ['mode-screen', 'signin-screen', 'forbidden-screen'].includes(id);
         nextScreen.classList.add('screen-transition-locked');
         screenTransitionUnlockTimer = setTimeout(() => {
           nextScreen.classList.remove('screen-transition-locked');
@@ -1261,11 +1285,28 @@
         showScreen('mode-screen');
       }
 
+      function returnHome_() {
+        if (requestInFlight || finalizeInFlight) {
+          showToast('処理中です。処理結果を確認してからモード選択へ戻ってください。', 'warning');
+          return;
+        }
+        const hasWork = shippingItems.length || completionOrders.length || completionLabelValues.length
+          || printJobs.some(job => job.state === 'queued' || job.state === 'requesting') || completionPlanId || completionPlanRequestId;
+        if (hasWork && !window.confirm('現在の読み取り・未完了の作業を破棄して、処理モード選択へ戻りますか？')) return;
+        resetPrintBatch();
+        shippingItems = [];
+        shippingContext = null;
+        pendingFinalize = null;
+        pendingIssueData = null;
+        resetCompletionShipmentState_();
+        showModeSelect();
+      }
+
       function updateCameraMode() {
         const shipping = currentMode === 'shipping';
         const printing = currentMode === 'print';
         const completion = currentMode === 'shipping-complete';
-        document.getElementById('camera-title').textContent = completion ? '発送完了' : (shipping ? '発送準備' : '印刷モード');
+        document.getElementById('camera-title').textContent = completion ? '納品' : (shipping ? '発送準備' : '印刷モード');
         document.getElementById('camera-subtitle').textContent = completion
           ? (completionStep === 'orders' ? '注文書QRを読み取ってください' : '実物伝票を読み取ってください')
           : (shipping ? 'QRを順番にスキャンしてください' : 'QRをかざしてください');
@@ -1912,7 +1953,7 @@
           if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
           if (!data.ok) {
             if (data.error_code === 'MULTIPLE_SHIP_PREP') renderCompletionCandidates_(data.candidates || [], orderId);
-            showToast(data.error || '注文を発送完了の対象にできません。', 'error');
+            showToast(data.error || '注文を納品の対象にできません。', 'error');
             finishRequestPerformance(measurement, 'api_error');
             return;
           }
@@ -3111,6 +3152,7 @@
       function finalizeShipping() { showConsolidationScreen(); }
 
       document.getElementById('print-mode-button').addEventListener('click', startPrintMode);
+      homeButton.addEventListener('click', returnHome_);
       document.getElementById('ship-mode-button').addEventListener('click', showCarrierSelect);
       document.getElementById('completion-mode-button').addEventListener('click', showCompletionModeSelect);
       document.getElementById('completion-individual-button').addEventListener('click', () => startCompletionMode('individual'));
@@ -3188,6 +3230,17 @@
       perfToggle.addEventListener('change', () => {
         debugPerformanceEnabled = perfToggle.checked;
         try { localStorage.setItem(PERF_ENABLED_STORAGE_KEY, debugPerformanceEnabled ? '1' : '0'); } catch (error) { /* 保存不可でも診断表示は続ける */ }
+        perfActions.hidden = !debugPerformanceEnabled;
+        if (!debugPerformanceEnabled) {
+          debugPerformanceVisible = false;
+          perfDisplayToggle.checked = false;
+          try { localStorage.setItem(PERF_VISIBLE_STORAGE_KEY, '0'); } catch (error) { /* 表示だけ消す */ }
+        }
+        renderPerformancePanel();
+      });
+      perfDisplayToggle.addEventListener('change', () => {
+        debugPerformanceVisible = debugPerformanceEnabled && perfDisplayToggle.checked;
+        try { localStorage.setItem(PERF_VISIBLE_STORAGE_KEY, debugPerformanceVisible ? '1' : '0'); } catch (error) { /* 保存不可でも表示は続ける */ }
         renderPerformancePanel();
       });
       perfCopyButton.addEventListener('click', async () => {
