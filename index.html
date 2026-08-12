@@ -46,7 +46,7 @@
     .hint { position:absolute; bottom:calc(36px + env(safe-area-inset-bottom)); padding:10px 18px; border-radius:999px; background:#0009; color:#fff; font-size:14px; }
     #loading-screen, #error-screen, #forbidden-screen { padding:28px; text-align:center; background:var(--bg); }
     #signin-screen { padding:28px; text-align:center; background:var(--bg); }
-    #mode-screen, #carrier-screen, #completion-mode-screen, #team-destination-screen, #carrier-confirmation-screen, #shipping-issues-screen, #complete-screen, #completion-result-screen { padding:28px; text-align:center; background:var(--bg); }
+    #mode-screen, #carrier-screen, #completion-mode-screen, #team-destination-screen, #carrier-confirmation-screen, #shipping-issues-screen, #complete-screen, #ship-prep-status-screen, #completion-result-screen { padding:28px; text-align:center; background:var(--bg); }
     .card { width:min(100%,420px); margin:auto; padding:28px 22px; border:1px solid #2b3248; border-radius:20px; background:var(--surface); }
     h1 { margin:0 0 12px; font-size:22px; } p { margin:8px 0; color:var(--muted); line-height:1.7; white-space:pre-wrap; }
     .spinner { width:42px; height:42px; margin:0 auto 18px; border:4px solid #343b52; border-top-color:var(--mode-color); border-radius:50%; animation:spin .8s linear infinite; }
@@ -225,6 +225,9 @@
   </section>
   <section id="complete-screen" class="screen" aria-label="発送準備完了">
     <div class="card"><h1>発送準備完了</h1><p id="complete-message"></p><div id="shipping-artifact-breakdown" class="artifact-breakdown"></div><div id="shipping-warnings" class="warning-list"></div><button id="complete-next-button" class="choice-button ship" type="button">発送準備を続ける</button></div>
+  </section>
+  <section id="ship-prep-status-screen" class="screen" aria-label="発送準備確定の結果確認">
+    <div class="card"><h1>発送準備確定の結果</h1><p id="ship-prep-status-notice">発送準備確定の結果を確認します。</p><div class="completion-result"><div class="completion-result-row"><span>確定リクエストID</span><strong id="ship-prep-status-id"></strong></div></div><div id="ship-prep-status-details" class="warning-list" hidden></div><div class="address-actions"><button id="ship-prep-status-retry" class="choice-button ship" type="button" hidden>同じ内容で再試行</button><button id="ship-prep-status-button" class="choice-button" type="button">結果を確認する（読み取り専用）</button></div></div>
   </section>
   <section id="completion-result-screen" class="screen" aria-label="発送完了確認">
     <div class="card"><h1>発送完了の確認</h1><p>実物伝票の印字と、画面の追跡番号を照合してください。</p>
@@ -594,6 +597,16 @@
         return error && error.failureCode === 'BAD_RESPONSE'
           ? badResponseMessage(error.performanceMeasurement)
           : fallback;
+      }
+
+      // 発送準備の確定は、同じ finalize_request_id を使う限り同一処理として扱う。
+      // 応答不達時に画面を再読み込みするとIDが変わり、処理済みでも別確定になるため、
+      // 汎用のBAD_RESPONSE案内をそのまま使わない。
+      function finalizeFailureMessage_(error) {
+        if (error && error.failureCode === 'BAD_RESPONSE') {
+          return '発送準備の確定結果を確認できません。処理済みの可能性があるため、画面を再読み込みせず、同じ画面から再試行するか担当者へ確認してください。';
+        }
+        return '発送準備の通信に失敗しました。画面を再読み込みせず、同じ画面から再試行してください。';
       }
 
       function badResponseKind_(error) {
@@ -2561,7 +2574,9 @@
         showLoading('伝票を生成しています…');
         const items = carrierState ? carrierState.items : shippingItems;
         const confirmedCarrier = consolidation === 'single_parcel' && carrierState ? carrierState.confirmedCarrier : null;
-        pendingFinalize = { consolidation, destination, items, confirmedCarrier };
+        // 応答不達後に recorded:false が返ったときだけ、同じ確定IDで同じ内容を
+        // 手動再試行できるよう、確定に必要な入力を保持する。
+        pendingFinalize = { consolidation, destination, items, confirmedCarrier, issueResolutions };
         let measurement = null;
         try {
           finalizeTransportAttempt += 1;
@@ -2584,26 +2599,7 @@
             finishRequestPerformance(measurement, 'api_error');
             return;
           }
-          const artifacts = data.artifacts || [];
-          const warnings = artifacts.flatMap(artifact => artifact.warnings || []);
-          const warningList = document.getElementById('shipping-warnings');
-          warningList.textContent = '';
-          warnings.forEach(warning => { const li = document.createElement('div'); li.textContent = `・${warning}`; warningList.appendChild(li); });
-          const itemCount = artifacts.reduce((sum, artifact) => sum + (Number(artifact.item_count) || 0), 0);
-          document.getElementById('complete-message').textContent = `Dropboxに保存しました（${itemCount || shippingItems.length}件）`;
-          const carrierLabels = { sagawa: '佐川急便', yamato: 'ヤマト運輸', clickpost: 'クリックポスト' };
-          const breakdown = new Map();
-          artifacts.forEach(artifact => {
-            const key = artifact.carrier || '不明';
-            breakdown.set(key, (breakdown.get(key) || 0) + (Number(artifact.item_count) || 0));
-          });
-          const breakdownEl = document.getElementById('shipping-artifact-breakdown');
-          breakdownEl.textContent = '';
-          breakdown.forEach((count, carrier) => {
-            const line = document.createElement('div');
-            line.textContent = `・${carrierLabels[carrier] || carrier}: ${count}件`;
-            breakdownEl.appendChild(line);
-          });
+          renderShipPrepComplete_(data);
           requestInFlight = false;
           finalizeInFlight = false;
           showScreen('complete-screen');
@@ -2613,10 +2609,162 @@
           finalizeInFlight = false;
           requestInFlight = false;
           const badResponse = error.failureCode === 'BAD_RESPONSE';
-          showToast(requestFailureMessage_(error, '通信に失敗しました。もう一度お試しください。'), 'error');
-          showScreen('team-destination-screen');
+          if (finalizeRequestId) {
+            await checkShipPrepStatus_({ automatic: true, cause: error });
+          } else {
+            showToast(finalizeFailureMessage_(error), 'error');
+            showScreen('team-destination-screen');
+          }
           finishRequestPerformance(measurement, badResponse ? 'bad_response' : 'network_error');
         }
+      }
+
+      function renderShipPrepComplete_(data) {
+        const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+        const warnings = artifacts.flatMap(artifact => artifact.warnings || []);
+        const warningList = document.getElementById('shipping-warnings');
+        warningList.textContent = '';
+        warnings.forEach(warning => { const li = document.createElement('div'); li.textContent = `・${warning}`; warningList.appendChild(li); });
+        const itemCount = artifacts.reduce((sum, artifact) => sum + (Number(artifact.item_count) || 0), 0);
+        document.getElementById('complete-message').textContent = `Dropboxに保存しました（${itemCount || shippingItems.length}件）`;
+        const carrierLabels = { sagawa: '佐川急便', yamato: 'ヤマト運輸', clickpost: 'クリックポスト' };
+        const breakdown = new Map();
+        artifacts.forEach(artifact => {
+          const key = artifact.carrier || '不明';
+          breakdown.set(key, (breakdown.get(key) || 0) + (Number(artifact.item_count) || 0));
+        });
+        const breakdownEl = document.getElementById('shipping-artifact-breakdown');
+        breakdownEl.textContent = '';
+        breakdown.forEach((count, carrier) => {
+          const line = document.createElement('div');
+          line.textContent = `・${carrierLabels[carrier] || carrier}: ${count}件`;
+          breakdownEl.appendChild(line);
+        });
+      }
+
+      function renderShipPrepStatusDetails_(data) {
+        const details = document.getElementById('ship-prep-status-details');
+        details.textContent = '';
+        const shipments = Array.isArray(data.shipments) ? data.shipments : [];
+        const missing = Array.isArray(data.missing_ledger) ? data.missing_ledger : [];
+        shipments.forEach(shipment => {
+          const row = document.createElement('div');
+          const orders = Array.isArray(shipment.order_ids) ? shipment.order_ids.join(', ') : '';
+          row.textContent = `発送ID ${shipment.shipment_id || '不明'}${orders ? ` / 注文 ${orders}` : ''}`;
+          details.appendChild(row);
+        });
+        missing.forEach(shipmentId => {
+          const row = document.createElement('div');
+          row.textContent = `台帳未記録: ${shipmentId}`;
+          details.appendChild(row);
+        });
+        details.hidden = details.textContent === '';
+      }
+
+      function renderShipPrepStatus_(data) {
+        const notice = document.getElementById('ship-prep-status-notice');
+        const retry = document.getElementById('ship-prep-status-retry');
+        const status = document.getElementById('ship-prep-status-button');
+        finalizeRequestId = data.finalize_request_id || finalizeRequestId;
+        document.getElementById('ship-prep-status-id').textContent = finalizeRequestId || '不明';
+        renderShipPrepStatusDetails_(data);
+        retry.hidden = true;
+        status.hidden = false;
+        if (data.recorded === false) {
+          notice.textContent = '発送準備の確定は実行されていません。同じ確定リクエストIDのまま、同じ内容で再試行できます。';
+          retry.hidden = !pendingFinalize;
+          showScreen('ship-prep-status-screen');
+          return;
+        }
+        if (data.complete === true) {
+          renderShipPrepComplete_(data);
+          showScreen('complete-screen');
+          showToast('発送準備は確定済みです。', 'success');
+          return;
+        }
+        notice.textContent = '発送準備は一部だけ記録されています。再実行せず、発送IDと台帳未記録の内容を担当者へ確認してください。';
+        showScreen('ship-prep-status-screen');
+      }
+
+      function renderShipPrepOutcomeUnknown_(error) {
+        const notice = document.getElementById('ship-prep-status-notice');
+        document.getElementById('ship-prep-status-id').textContent = finalizeRequestId || '不明';
+        document.getElementById('ship-prep-status-retry').hidden = true;
+        document.getElementById('ship-prep-status-button').hidden = false;
+        document.getElementById('ship-prep-status-details').hidden = true;
+        notice.textContent = '発送準備が確定したか確認できていません。外部処理は再実行せず、「結果を確認する（読み取り専用）」を押してください。';
+        showScreen('ship-prep-status-screen');
+        showToast('発送準備の確定結果を確認できていません。結果を確認してください。', 'warning');
+      }
+
+      // 発送準備の確定結果を読むだけのP7。確定処理を再送しない。
+      async function checkShipPrepStatus_(options = {}) {
+        const automatic = options.automatic === true;
+        if (!finalizeRequestId) return;
+        if (requestInFlight && !automatic) {
+          showToast('結果を確認中です。完了するまでお待ちください。', 'warning');
+          return;
+        }
+        const button = document.getElementById('ship-prep-status-button');
+        const maxAttempts = automatic ? 2 : 1;
+        const logicalRequestId = createRequestId('req');
+        requestInFlight = true;
+        button.disabled = true;
+        button.textContent = '結果を確認中…';
+        let measurement = null;
+        try {
+          for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+            showLoading(automatic
+              ? `発送準備確定の応答を確認できませんでした。\n結果を照会しています（${attempt}回目/${maxAttempts}回・読み取り専用・外部処理は実行しません）。`
+              : '発送準備確定の結果を確認しています…\n読み取り専用です。外部処理は実行しません。');
+            try {
+              const request = buildApiRequest_({
+                action: 'ship_prep_status', id_token: idToken, finalize_request_id: finalizeRequestId
+              }, { logicalRequestId, transportAttempt: attempt });
+              const result = await fetchJsonWithPerformance('ship_prep_status', request.body, null, request.options);
+              const data = result.data || {};
+              measurement = result.measurement;
+              if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
+              if (!data.ok) {
+                showScreen('ship-prep-status-screen');
+                showToast(data.error || '結果を確認できませんでした。もう一度確認してください。', 'error');
+                finishRequestPerformance(measurement, 'api_error');
+                return;
+              }
+              renderShipPrepStatus_(data);
+              finishRequestPerformance(measurement, 'success');
+              return;
+            } catch (error) {
+              measurement = error.performanceMeasurement || measurement;
+              if (attempt < maxAttempts) {
+                showLoading(`発送準備確定の応答を確認できませんでした。\n結果を照会しています（${attempt + 1}回目/${maxAttempts}回・読み取り専用・外部処理は実行しません）。`);
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                continue;
+              }
+              if (automatic) renderShipPrepOutcomeUnknown_(options.cause || error);
+              else {
+                showScreen('ship-prep-status-screen');
+                showToast(requestFailureMessage_(error, '結果を確認できませんでした。もう一度確認してください。'), 'error');
+              }
+              finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
+              return;
+            }
+          }
+        } finally {
+          requestInFlight = false;
+          button.disabled = false;
+          button.textContent = '結果を確認する（読み取り専用）';
+        }
+      }
+
+      function retryShipPrepFinalize_() {
+        if (!pendingFinalize || !finalizeRequestId) return;
+        submitFinalize(
+          pendingFinalize.consolidation,
+          pendingFinalize.destination,
+          pendingFinalize.issueResolutions || {},
+          { items: pendingFinalize.items, confirmedCarrier: pendingFinalize.confirmedCarrier }
+        );
       }
 
       function finalizeShipping() { showConsolidationScreen(); }
@@ -2660,6 +2808,8 @@
       });
       document.getElementById('completion-confirm-button').addEventListener('click', executeCompletionPlan_);
       document.getElementById('completion-status-button').addEventListener('click', checkCompletionStatus_);
+      document.getElementById('ship-prep-status-button').addEventListener('click', checkShipPrepStatus_);
+      document.getElementById('ship-prep-status-retry').addEventListener('click', retryShipPrepFinalize_);
       document.getElementById('carrier-confirmation-back').addEventListener('click', () => showConsolidationScreen());
       document.getElementById('carrier-confirmation-submit').addEventListener('click', confirmCarrierSelection);
       document.getElementById('shipping-issues-back').addEventListener('click', () => {
