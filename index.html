@@ -234,6 +234,7 @@
         <div class="completion-result">
           <div id="completion-tracking-number" class="completion-tracking-number"></div>
           <div id="completion-result-plan-row" class="completion-result-row" hidden><span>処理計画ID</span><strong id="completion-result-plan-id"></strong></div>
+          <div id="completion-result-plan-request-row" class="completion-result-row" hidden><span>計画作成リクエストID</span><strong id="completion-result-plan-request-id"></strong></div>
           <div class="completion-result-row"><span>読取生値</span><strong id="completion-result-raw-values">未読</strong></div>
         <div class="completion-result-row"><span>注文番号</span><strong id="completion-result-orders"></strong></div>
         <div class="completion-result-row"><span>発送ID</span><strong id="completion-result-shipment">P4照合待ち</strong></div>
@@ -289,6 +290,9 @@
       let completionPendingOrderId = '';
       let completionConfirmedTracking = '';
       let completionPlanId = '';
+      // P8: 計画保存の応答が失われたとき、保存済み計画を照会するための論理ID。
+      // 作成要求ごとに新しくし、書込みを自動再送する用途には使わない。
+      let completionPlanRequestId = '';
       let completionNotify = null;
       let completionCardsMissing = [];
       let shippingItems = [];
@@ -635,6 +639,26 @@
         }
         const randomPart = Math.random().toString(36).slice(2, 12);
         return `print-${Date.now().toString(36)}-${nextPrintSequence.toString(36)}-${randomPart}`;
+      }
+
+      // 業務状態を更新しない照会だけに使う。受信済みのAPIエラーはここで再試行せず、
+      // 通信例外・不正応答で結果を受け取れなかった場合だけ同じ論理リクエストとして読む。
+      async function fetchReadJsonWithRetry_(action, payload, scanMetrics, onRetry) {
+        const logicalRequestId = createRequestId('req');
+        const maxAttempts = 2;
+        let lastError = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          try {
+            const request = buildApiRequest_(payload, { logicalRequestId, transportAttempt: attempt });
+            return await fetchJsonWithPerformance(action, request.body, scanMetrics, request.options);
+          } catch (error) {
+            lastError = error;
+            if (attempt === maxAttempts) throw error;
+            if (typeof onRetry === 'function') onRetry(attempt + 1, maxAttempts);
+            await new Promise(resolve => setTimeout(resolve, 1500));
+          }
+        }
+        throw lastError || new Error('読み取り結果を取得できませんでした。');
       }
 
       async function fetchJsonWithPerformance(action, body, scanMetrics, options = {}) {
@@ -1155,6 +1179,7 @@
         completionPendingOrderId = '';
         completionConfirmedTracking = '';
         completionPlanId = '';
+        completionPlanRequestId = '';
         completionNotify = null;
         completionCardsMissing = [];
         resetCompletionConfirmButton_();
@@ -1211,12 +1236,18 @@
         showLoading('発送準備の情報を取得しています…');
         let measurement = null;
         try {
-          const request = buildApiRequest_({ action: 'ship_prep_context', id_token: idToken });
-          const result = await fetchJsonWithPerformance('ship_prep_context', request.body, null, request.options);
+          const result = await fetchReadJsonWithRetry_(
+            'ship_prep_context', { action: 'ship_prep_context', id_token: idToken }, null,
+            (attempt, total) => showLoading(`発送準備の情報を再確認しています（${attempt}回目/${total}回・読み取り専用）…`)
+          );
           const data = result.data;
           measurement = result.measurement;
           if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
-          if (!data.ok) throw new Error(data.error || '発送準備の営業日情報を取得できませんでした。');
+          if (!data.ok) {
+            showError(data.error || '発送準備の営業日情報を取得できませんでした。');
+            finishRequestPerformance(measurement, 'api_error');
+            return;
+          }
           shippingContext = data;
           serverEpochAtSync = Date.parse(data.server_now);
           performanceNowAtSync = performance.now();
@@ -1706,14 +1737,13 @@
         setScanFeedback(true, '注文QR読取済み・照会中…');
         let measurement = null;
         try {
-          const request = buildApiRequest_({
+          const result = await fetchReadJsonWithRetry_('ship_done_scan_order', {
             action: 'ship_done_scan_order',
             id_token: idToken,
             mode: completionConsolidation === 'single_parcel' ? 'consolidated' : 'individual',
             order_id: orderId,
             session_shipment_id: sessionShipmentId || completionSessionShipmentId || null
-          });
-          const result = await fetchJsonWithPerformance('ship_done_scan_order', request.body, null, request.options);
+          }, null, (attempt, total) => setScanFeedback(true, `注文QR読取済み・結果を再確認しています（${attempt}回目/${total}回）…`));
           const data = result.data;
           measurement = result.measurement;
           if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
@@ -1870,9 +1900,18 @@
         let measurement = null;
         try {
           showLoading('伝票を照合しています…');
+          // 前回の計画を、今回作る計画の結果として読んではいけない。
+          // 新しい書込み要求へ入る前に、P6用の状態を必ず切り離す。
+          completionPlanId = '';
+          completionNotify = null;
+          completionCardsMissing = [];
+          // P8: 今回の「計画を作る」という論理要求を識別する。応答が失われた場合も
+          // 同じIDで保存結果を読むだけで、ship_done_plan自体は再送しない。
+          completionPlanRequestId = createRequestId('plan');
           const request = buildApiRequest_({
             action: 'ship_done_plan',
             id_token: idToken,
+            plan_request_id: completionPlanRequestId,
             mode: completionConsolidation === 'single_parcel' ? 'consolidated' : 'individual',
             shipment_id: completionSessionShipmentId,
             order_ids: completionOrders.map(item => item.orderId),
@@ -1897,7 +1936,9 @@
           finishRequestPerformance(measurement, 'success');
         } catch (error) {
           measurement = error.performanceMeasurement || measurement;
-          renderCompletionResult_({ ok: false, error: requestFailureMessage_(error, '伝票照合に失敗しました。') });
+          // 計画作成は保存を伴うため自動再送しない。要求IDでP8を読むことで、
+          // 保存済みかを確定できる。未保存と返っても、ここから書込みは行わない。
+          renderCompletionPlanOutcomeUnknown_(error);
           showScreen('completion-result-screen');
           finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
         } finally {
@@ -2013,6 +2054,127 @@
         if (!row || !value) return;
         row.hidden = !completionPlanId;
         value.textContent = completionPlanId || '';
+      }
+
+      function renderCompletionPlanRequestId_() {
+        const row = document.getElementById('completion-result-plan-request-row');
+        const value = document.getElementById('completion-result-plan-request-id');
+        if (!row || !value) return;
+        row.hidden = !completionPlanRequestId;
+        value.textContent = completionPlanRequestId || '';
+      }
+
+      function renderCompletionPlanOutcomeUnknown_(error) {
+        const confirm = document.getElementById('completion-confirm-button');
+        const notice = document.getElementById('completion-result-notice');
+        const statusButton = document.getElementById('completion-status-button');
+        confirm.disabled = true;
+        confirm.textContent = '計画の保存結果を確認してください';
+        renderCompletionPlanId_();
+        renderCompletionPlanRequestId_();
+        setCompletionStatusDetails_([]);
+        statusButton.hidden = !completionPlanRequestId;
+        notice.textContent = error && error.failureCode === 'BAD_RESPONSE'
+          ? `計画作成の応答を確認できませんでした（${badResponseKind_(error)}）。計画作成は再送せず、「結果を確認する（読み取り専用）」を押してください。`
+          : '計画作成の通信に失敗しました。計画作成は再送せず、「結果を確認する（読み取り専用）」を押してください。';
+        showToast('計画が保存されたか確認できていません。結果を確認してください。', 'warning');
+      }
+
+      // P8: plan_request_idから保存済み計画を読む。計画作成を書込み再送しない。
+      async function checkCompletionPlanRequestStatus_() {
+        if (!completionPlanRequestId) {
+          showToast('計画作成リクエストIDがないため結果を確認できません。最初から読み取り直してください。', 'warning');
+          return;
+        }
+        if (requestInFlight) {
+          showToast('結果を確認中です。完了するまでお待ちください。', 'warning');
+          return;
+        }
+        const button = document.getElementById('completion-status-button');
+        requestInFlight = true;
+        button.disabled = true;
+        button.textContent = '結果を確認中…';
+        let measurement = null;
+        try {
+          showLoading('計画作成の結果を確認しています…\n読み取り専用です。計画作成は再送しません。');
+          const request = buildApiRequest_({
+            action: 'ship_done_plan_status', id_token: idToken, plan_request_id: completionPlanRequestId
+          });
+          const result = await fetchJsonWithPerformance('ship_done_plan_status', request.body, null, request.options);
+          const data = result.data || {};
+          measurement = result.measurement;
+          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
+          if (!data.ok) {
+            showScreen('completion-result-screen');
+            showToast(data.error || '計画作成の結果を確認できませんでした。', 'error');
+            finishRequestPerformance(measurement, 'api_error');
+            return;
+          }
+          renderCompletionPlanRequestStatus_(data);
+          finishRequestPerformance(measurement, 'success');
+        } catch (error) {
+          measurement = error.performanceMeasurement || measurement;
+          showScreen('completion-result-screen');
+          showToast(requestFailureMessage_(error, '計画作成の結果を確認できませんでした。もう一度確認してください。'), 'error');
+          finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
+        } finally {
+          requestInFlight = false;
+          button.disabled = false;
+          button.textContent = '結果を確認する（読み取り専用）';
+        }
+      }
+
+      function renderCompletionPlanRequestStatus_(data) {
+        const confirm = document.getElementById('completion-confirm-button');
+        const notice = document.getElementById('completion-result-notice');
+        const statusButton = document.getElementById('completion-status-button');
+        completionPlanRequestId = data.plan_request_id || completionPlanRequestId;
+        renderCompletionPlanRequestId_();
+        showScreen('completion-result-screen');
+
+        if (data.recorded !== true) {
+          completionPlanId = '';
+          renderCompletionPlanId_();
+          confirm.disabled = true;
+          confirm.textContent = '計画は未保存';
+          statusButton.hidden = false;
+          setCompletionStatusDetails_([]);
+          notice.textContent = '計画は保存されていません。計画作成を自動再送していません。最初から読み取り直してください。';
+          showToast('計画は保存されていません。最初から読み取り直してください。', 'warning');
+          return;
+        }
+
+        completionPlanId = data.plan_id || '';
+        completionNotify = data.notify;
+        completionCardsMissing = Array.isArray(data.cards_missing) ? data.cards_missing : [];
+        completionRawTrackingValue = data.tracking_number || completionRawTrackingValue;
+        renderCompletionPlanId_();
+
+        // 「既に実行済みでない」と肯定的に確認できた計画だけをP5へ進める。
+        // 欠落・想定外の応答を未実行とみなすと二重フルフィルメントに繋がる。
+        if (data.already_executed !== false) {
+          confirm.disabled = true;
+          confirm.textContent = data.already_executed === true ? '既に処理済み' : '実行状態を確認してください';
+          statusButton.hidden = !completionPlanId;
+          setCompletionStatusDetails_([]);
+          notice.textContent = data.already_executed === true
+            ? '計画は保存済みですが、既に発送確定処理へ進んでいます。「結果を確認する（読み取り専用）」で実行結果を確認してください。'
+            : '計画は保存済みですが、実行状態を確認できません。発送確定は行わず、「結果を確認する（読み取り専用）」で確認してください。';
+          showToast(data.already_executed === true
+            ? '計画は既に処理されています。実行結果を確認してください。'
+            : '計画の実行状態を確認できません。実行結果を確認してください。', 'warning');
+          return;
+        }
+
+        // P8の応答から、P5に必要な確認画面だけを復元する。
+        renderCompletionResult_(Object.assign({}, data, { ok: true, orders: data.items || [] }));
+        renderCompletionPlanRequestId_();
+        // P8で復元した直後にも、作業者が改めて保存結果を確認できるよう残す。
+        statusButton.hidden = false;
+        if (!completionCardsMissing.length) {
+          document.getElementById('completion-result-card').textContent = '保存済み計画（カード情報は照会対象外）';
+        }
+        showToast('保存済みの計画を確認画面へ復元しました。印字を照合してください。', 'success');
       }
 
       function setCompletionStatusDetails_(items) {
@@ -2211,6 +2373,7 @@
         document.getElementById('completion-status-button').hidden = true;
         setCompletionStatusDetails_([]);
         renderCompletionPlanId_();
+        renderCompletionPlanRequestId_();
         const ready = result.ok === true || result.readyForConfirmation === true;
         confirm.disabled = !ready;
         confirm.textContent = '印字と一致・発送確定';
@@ -2237,12 +2400,11 @@
         let measurement = null;
         try {
           const clientDispatchedAt = adjustedIsoNow();
-          const request = buildApiRequest_({
+          const result = await fetchReadJsonWithRetry_('ship_prep_scan', {
             action: 'ship_prep_scan', order_id: orderId, id_token: idToken,
             scan_accepted_at: (scanMetrics && scanMetrics.scanAcceptedAt) || clientDispatchedAt,
             client_dispatched_at: clientDispatchedAt
-          });
-          const result = await fetchJsonWithPerformance('ship_prep_scan', request.body, scanMetrics, request.options);
+          }, scanMetrics, (attempt, total) => setScanFeedback(true, `注文書QR読取済み・結果を再確認しています（${attempt}回目/${total}回）…`));
           const data = result.data;
           measurement = result.measurement;
           if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
@@ -2807,7 +2969,10 @@
         startCamera();
       });
       document.getElementById('completion-confirm-button').addEventListener('click', executeCompletionPlan_);
-      document.getElementById('completion-status-button').addEventListener('click', checkCompletionStatus_);
+      document.getElementById('completion-status-button').addEventListener('click', () => {
+        // plan_idがあればP6（実行結果）、無ければP8（計画保存結果）を読む。
+        return completionPlanId ? checkCompletionStatus_() : checkCompletionPlanRequestStatus_();
+      });
       document.getElementById('ship-prep-status-button').addEventListener('click', checkShipPrepStatus_);
       document.getElementById('ship-prep-status-retry').addEventListener('click', retryShipPrepFinalize_);
       document.getElementById('carrier-confirmation-back').addEventListener('click', () => showConsolidationScreen());
