@@ -1947,14 +1947,13 @@
           finishRequestPerformance(measurement, data.complete === true ? 'success' : 'incomplete');
         } catch (error) {
           measurement = error.performanceMeasurement || measurement;
-          renderCompletionExecutionResult_({
-            complete: false,
-            outcomeUnknown: true,
-            // P5は外部更新の成否が不明になり得る。分類を示しても、ここで「再試行」を促してはいけない。
-            error: error.failureCode === 'BAD_RESPONSE'
-              ? `発送確定の応答を確認できませんでした（${badResponseKind_(error)}）。再実行せず、担当者へ確認してください。`
-              : '発送確定の通信に失敗しました。再実行せず、担当者へ確認してください。'
-          });
+          // P5を再送してはいけない。ただし保存済み計画・消込ログを読むだけのP6は
+          // 副作用が無いため、応答不達時に限って最大2回まで自動照会する。
+          if (completionPlanId) {
+            await checkCompletionStatus_({ automatic: true, cause: error });
+          } else {
+            renderCompletionOutcomeUnknown_(error);
+          }
           finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
         } finally {
           requestInFlight = false;
@@ -2018,13 +2017,30 @@
         });
       }
 
+      function renderCompletionOutcomeUnknown_(error) {
+        renderCompletionExecutionResult_({
+          complete: false,
+          outcomeUnknown: true,
+          // P5は外部更新の成否が不明になり得る。分類を示しても、ここで「再試行」を促してはいけない。
+          error: error && error.failureCode === 'BAD_RESPONSE'
+            ? `発送確定の応答を確認できませんでした（${badResponseKind_(error)}）。`
+            : '発送確定の通信に失敗しました。'
+        });
+      }
+
       // P6: 保存済み計画と消込ログだけを読む。外部更新を再送しない。
-      async function checkCompletionStatus_() {
+      async function checkCompletionStatus_(options = {}) {
+        const automatic = options.automatic === true;
+        // 自動照会だけは通信失敗時にもう一度だけ照会する。P5の再送ではなく、
+        // 同じ読み取り専用P6リクエストの transport_attempt を進める。
+        const maxAttempts = automatic ? 2 : 1;
+        const logicalRequestId = createRequestId('req');
+        const retryDelayMs = 1500;
         if (!completionPlanId) {
           showToast('処理計画IDがないため結果を確認できません。最初から読み取り直してください。', 'warning');
           return;
         }
-        if (requestInFlight) {
+        if (requestInFlight && !automatic) {
           showToast('結果を確認中です。完了するまでお待ちください。', 'warning');
           return;
         }
@@ -2032,29 +2048,48 @@
         requestInFlight = true;
         button.disabled = true;
         button.textContent = '結果を確認中…';
-        showLoading('発送確定の結果を確認しています…\n読み取り専用です。外部処理は実行しません。');
         let measurement = null;
         try {
-          const request = buildApiRequest_({
-            action: 'ship_done_status', id_token: idToken, plan_id: completionPlanId
-          });
-          const result = await fetchJsonWithPerformance('ship_done_status', request.body, null, request.options);
-          const data = result.data || {};
-          measurement = result.measurement;
-          if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
-          if (!data.ok) {
-            showScreen('completion-result-screen');
-            showToast(data.error || '結果を確認できませんでした。もう一度確認してください。', 'error');
-            finishRequestPerformance(measurement, 'api_error');
-            return;
+          for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+            showLoading(automatic
+              ? `発送確定の応答を確認できませんでした。\n結果を照会しています（${attempt}回目/${maxAttempts}回・読み取り専用・外部処理は実行しません）。`
+              : '発送確定の結果を確認しています…\n読み取り専用です。外部処理は実行しません。');
+            try {
+              const request = buildApiRequest_({
+                action: 'ship_done_status', id_token: idToken, plan_id: completionPlanId
+              }, { logicalRequestId, transportAttempt: attempt });
+              const result = await fetchJsonWithPerformance('ship_done_status', request.body, null, request.options);
+              const data = result.data || {};
+              measurement = result.measurement;
+              if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
+              if (!data.ok) {
+                showScreen('completion-result-screen');
+                showToast(data.error || '結果を確認できませんでした。もう一度確認してください。', 'error');
+                finishRequestPerformance(measurement, 'api_error');
+                return;
+              }
+              // ok:true の complete:false も確定した応答。自動照会は繰り返さない。
+              renderCompletionPlanStatus_(data);
+              finishRequestPerformance(measurement, 'success');
+              return;
+            } catch (error) {
+              measurement = error.performanceMeasurement || measurement;
+              if (attempt < maxAttempts) {
+                showLoading(`発送確定の応答を確認できませんでした。\n結果を照会しています（${attempt + 1}回目/${maxAttempts}回・読み取り専用・外部処理は実行しません）。`);
+                await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+                continue;
+              }
+              if (automatic) {
+                renderCompletionOutcomeUnknown_(options.cause || error);
+                showToast('結果を自動確認できませんでした。結果を確認してください。', 'warning');
+              } else {
+                showScreen('completion-result-screen');
+                showToast(requestFailureMessage_(error, '結果を確認できませんでした。もう一度確認してください。'), 'error');
+              }
+              finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
+              return;
+            }
           }
-          renderCompletionPlanStatus_(data);
-          finishRequestPerformance(measurement, 'success');
-        } catch (error) {
-          measurement = error.performanceMeasurement || measurement;
-          showScreen('completion-result-screen');
-          showToast(requestFailureMessage_(error, '結果を確認できませんでした。もう一度確認してください。'), 'error');
-          finishRequestPerformance(measurement, error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error');
         } finally {
           requestInFlight = false;
           button.disabled = false;
