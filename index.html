@@ -2683,7 +2683,7 @@
       }
 
       function carrierLabel_(carrier) {
-        return carrier === 'sagawa' ? '佐川急便' : carrier === 'yamato' ? 'ヤマト運輸' : carrier || '不明';
+        return carrier === 'sagawa' ? '佐川急便' : carrier === 'yamato' ? 'ヤマト運輸' : carrier === 'clickpost' ? 'クリックポスト' : carrier || '不明';
       }
 
       function renderShippingList() {
@@ -2874,7 +2874,13 @@
           select.className = 'carrier-confirmation-select';
           select.setAttribute('aria-label', `${labelText}の運送会社`);
           select.appendChild(new Option('選択してください', '', true, false));
-          [['sagawa', '佐川急便'], ['yamato', 'ヤマト運輸']].forEach(([value, text]) => {
+          const carrierOptions = [['sagawa', '佐川急便'], ['yamato', 'ヤマト運輸']];
+          // クリックポストは個別発送の宅配便行でのみ手動選択できる。
+          // まとめ発送はトップレベル選択であり、クリックポスト対象外なので追加しない。
+          if (itemIndex !== null && shippingMethod === 'parcel') {
+            carrierOptions.push(['clickpost', 'クリックポスト']);
+          }
+          carrierOptions.forEach(([value, text]) => {
             const option = new Option(text, value);
             select.appendChild(option);
           });
