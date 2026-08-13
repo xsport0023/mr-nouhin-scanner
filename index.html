@@ -880,7 +880,20 @@
         if (action === 'print') return 45000;
         if (action === 'ship_done_execute') return 60000;
         if (action === 'ship_done_plan') return 30000;
-        return 8000;
+        // **既定値は 8000 だった。8/13の実測156件で、未到達13件のうち9件が期限切れで、
+        // その9件すべてが期限8秒の3つ（ship_prep_scan / ship_done_scan_order /
+        // ship_prep_context）に集中していた。期限に余裕のある3つは0件である。**
+        //
+        // 同じ日・同じ端末・同じ回線で ship_prep_finalize は RTT 25.9秒の通信を
+        // 成功させている（期限28秒）。**回線は運びきっていた。切っていたのは期限の方。**
+        // 到達RTTのp95が3つとも6.0〜6.2秒で揃うのは、8秒で切られた分布の頭打ちである。
+        //
+        // **この3つは fetchReadJsonWithRetry_ で最大2回試すため、最悪待ちは
+        // 20秒 + 1.5秒 + 20秒 になる。** 8秒時代の 8+1.5+8=17.5秒より長い。
+        // それでも延ばすのは、17.5秒待った末に失敗させるより、待って成功するほうが
+        // 業務が進むからである。**再試行の回数を減らすかは、1回目の期限切れが
+        // 記録に残るようにしてから判断する**（いまは2回目が成功すると記録が消える）。
+        return 20000;
       }
 
       async function fetchWithDeadline_(url, init, timeoutMs) {
