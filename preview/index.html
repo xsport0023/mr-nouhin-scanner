@@ -455,7 +455,11 @@
           const total = reached.map(item => item.render && item.render.totalMs);
           return {
             action: group.action, n: group.samples.length, reached: reached.length, notReached, unknown,
-            clientTimeout: group.samples.filter(item => item.outcome === 'client_timeout').length,
+            // **api.timedOut も数える。** outcome の分類を直す前に保存されたレコードは
+            // outcome が network_error のままだが、印そのものは diagnosticSample_ が
+            // 最初から保存している。**これで既存データを遡って再集計できる。**
+            clientTimeout: group.samples.filter(item =>
+              item.outcome === 'client_timeout' || (item.api && item.api.timedOut === true)).length,
             rttN: rtt.filter(Number.isFinite).length, totalN: total.filter(Number.isFinite).length,
             serverN: server.filter(Number.isFinite).length, transportN: transport.filter(Number.isFinite).length,
             p50RttMs: percentile_(rtt, 0.5), p95RttMs: percentile_(rtt, 0.95),
@@ -900,6 +904,16 @@
 
       function finishRequestPerformance(measurement, outcome) {
         if (!measurement) return;
+        // **期限切れは network_error と別物である。**
+        // outcome を決める呼出側は10箇所あり、すべて BAD_RESPONSE かどうかの2分岐で、
+        // CLIENT_TIMEOUT を区別していない。**呼出側を書き換えると必ず抜けが出るため、
+        // 記録に載る直前のこの1箇所で正しい名前へ直す。**
+        //
+        // timedOut に true が入るのは fetchJsonWithPerformance の catch だけで、
+        // そこは無条件に再throwする。**よってこの上書きは network_error 以外に届かない。**
+        // outcome の条件は、将来別経路で timedOut が立ったときに
+        // 他の分類を黙って壊さないための範囲限定である（判定の代理ではない）。
+        if (measurement.timedOut === true && outcome === 'network_error') outcome = 'client_timeout';
         waitForNextPaint().then(paintedAt => {
           const jsonAndRenderMs = measurement.jsonReadyAt ? paintedAt - measurement.jsonReadyAt + (measurement.jsonParseMs || 0) : null;
           const scanStartedAt = measurement.scanMetrics && measurement.scanMetrics.startedAt;
