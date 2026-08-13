@@ -408,6 +408,7 @@
           capturedAt: new Date().toISOString(),
           action: result.action,
           outcome: result.outcome,
+          superseded: result.superseded === true,
           api: {
             fetchRttMs: api.fetchRttMs, headersMs: api.headersMs, bodyDownloadMs: api.bodyDownloadMs,
             serverTotalMs: api.serverTotalMs, transportOverheadMs: api.transportOverheadMs,
@@ -446,38 +447,55 @@
           group.samples.push(item); groups.set(item.action, group);
         });
         return [...groups.values()].sort((a, b) => a.action.localeCompare(b.action)).map(group => {
-          const reached = group.samples.filter(item => transportStatus_(item.outcome) === 'reached');
-          const notReached = group.samples.filter(item => transportStatus_(item.outcome) === 'not_reached').length;
-          const unknown = group.samples.length - reached.length - notReached;
+          // **率は論理要求あたりで数える。** 再試行に取って代わられた試行を母数へ入れると、
+          // 再試行で成功した要求が未到達1件＋到達1件として二重に入り、意味が変わる。
+          // **印の無い既存データは最終試行として扱われるので、過去の集計値は動かない。**
+          const finals = group.samples.filter(item => item.superseded !== true);
+          const superseded = group.samples.filter(item => item.superseded === true);
+          const reached = finals.filter(item => transportStatus_(item.outcome) === 'reached');
+          const notReached = finals.filter(item => transportStatus_(item.outcome) === 'not_reached').length;
+          const unknown = finals.length - reached.length - notReached;
           const rtt = reached.map(item => item.api && item.api.fetchRttMs);
           const server = reached.map(item => item.api && item.api.serverTotalMs);
           const transport = reached.map(item => item.api && item.api.transportOverheadMs);
           const total = reached.map(item => item.render && item.render.totalMs);
           return {
-            action: group.action, n: group.samples.length, reached: reached.length, notReached, unknown,
+            action: group.action, n: finals.length, reached: reached.length, notReached, unknown,
             // **api.timedOut も数える。** outcome の分類を直す前に保存されたレコードは
             // outcome が network_error のままだが、印そのものは diagnosticSample_ が
             // 最初から保存している。**これで既存データを遡って再集計できる。**
-            clientTimeout: group.samples.filter(item =>
+            clientTimeout: finals.filter(item =>
               item.outcome === 'client_timeout' || (item.api && item.api.timedOut === true)).length,
+            // 再試行に取って代わられた試行。**1回目が何回落ちたか**が分かる。
+            retriedAway: superseded.length,
+            retriedAwayTimeout: superseded.filter(item =>
+              item.outcome === 'client_timeout' || (item.api && item.api.timedOut === true)).length,
+            // 2試行目以降で到達した論理要求。**再試行が実際に救った回数。**
+            rescued: reached.filter(item =>
+              item.api && Number(item.api.transportAttempt) >= 2).length,
             rttN: rtt.filter(Number.isFinite).length, totalN: total.filter(Number.isFinite).length,
             serverN: server.filter(Number.isFinite).length, transportN: transport.filter(Number.isFinite).length,
             p50RttMs: percentile_(rtt, 0.5), p95RttMs: percentile_(rtt, 0.95),
             p50ServerMs: percentile_(server, 0.5), p95ServerMs: percentile_(server, 0.95),
             p50TransportMs: percentile_(transport, 0.5), p95TransportMs: percentile_(transport, 0.95),
             p50TotalMs: percentile_(total, 0.5), p95TotalMs: percentile_(total, 0.95),
-            outcomes: group.samples.reduce((out, item) => { out[item.outcome] = (out[item.outcome] || 0) + 1; return out; }, {})
+            outcomes: finals.reduce((out, item) => { out[item.outcome] = (out[item.outcome] || 0) + 1; return out; }, {})
           };
         });
       }
 
       function performanceSummaryMarkdown_() {
         const rows = summarizePerformanceSamples_();
-        const lines = ['# A-10 Scanner performance summary', `samples: ${performanceSamples.length}`, '', 'RTT = API往復。total = 結果表示まで（scan actionは読取開始からを含む）。', '', '| action | n | 到達率 | 未到達率 | p50 RTT | p95 RTT | p50 server | p95 server | p50 transport | p95 transport | p50 total | p95 total | timeout |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|'];
+        const lines = ['# A-10 Scanner performance summary', `samples: ${performanceSamples.length}`, '', 'RTT = API往復。total = 結果表示まで（scan actionは読取開始からを含む）。', '到達率・未到達率は論理要求あたり。再試行に取って代わられた試行は母数から外し、下の「再試行」行に出す。', '', '| action | n | 到達率 | 未到達率 | p50 RTT | p95 RTT | p50 server | p95 server | p50 transport | p95 transport | p50 total | p95 total | timeout |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|'];
         rows.forEach(row => {
           const percent = count => `${((count / row.n) * 100).toFixed(1)}%`;
           lines.push(`| ${row.action} | ${row.n} | ${percent(row.reached)} | ${percent(row.notReached)} | ${formatMs(row.p50RttMs)} (到達${row.rttN}) | ${formatMs(row.p95RttMs)}${row.rttN < 5 ? ` (n=${row.rttN},参考)` : ''} | ${formatMs(row.p50ServerMs)} (n=${row.serverN}) | ${formatMs(row.p95ServerMs)}${row.serverN < 5 ? ` (n=${row.serverN},参考)` : ''} | ${formatMs(row.p50TransportMs)} (n=${row.transportN}) | ${formatMs(row.p95TransportMs)}${row.transportN < 5 ? ` (n=${row.transportN},参考)` : ''} | ${formatMs(row.p50TotalMs)} (到達${row.totalN}) | ${formatMs(row.p95TotalMs)}${row.totalN < 5 ? ` (n=${row.totalN},参考)` : ''} | ${row.clientTimeout} |`);
           lines.push(`  - outcomes: ${Object.entries(row.outcomes).map(([key, value]) => `${key}=${value}`).join(', ')}`);
+          // **再試行の実績は率と別の行に出す。** 母数が違う（試行あたり／論理要求あたり）ので
+          // 同じ表へ混ぜると読み違える。出るのは再試行が起きたactionだけ。
+          if (row.retriedAway || row.rescued) {
+            lines.push(`  - 再試行: 1回目失敗${row.retriedAway}（うち期限切れ${row.retriedAwayTimeout}） / 2回目で到達${row.rescued}`);
+          }
         });
         return lines.join('\n');
       }
@@ -786,6 +804,17 @@
           } catch (error) {
             lastError = error;
             if (attempt === maxAttempts) throw error;
+            // **最終試行でない失敗は、呼出側の catch へ届かないまま捨てられていた。**
+            // measurement は試行ごとに作り直されるので、2回目が成功すると1回目の
+            // 計測は誰にも渡らない。**8/13の期限切れ9件は「2回とも超えた」ものだけで、
+            // 8秒に当たった実回数は測れていなかった。** ここで記録する。
+            //
+            // **superseded を立てるのは、未到達率の意味を変えないため。**
+            // この指標は論理要求あたりの到達率であって、試行あたりではない。
+            // 印が無いと、再試行で成功した要求が未到達1件＋到達1件として二重に入る。
+            finishRequestPerformance(error.performanceMeasurement,
+              error.failureCode === 'BAD_RESPONSE' ? 'bad_response' : 'network_error',
+              { superseded: true });
             if (typeof onRetry === 'function') onRetry(attempt + 1, maxAttempts);
             await new Promise(resolve => setTimeout(resolve, 1500));
           }
@@ -915,7 +944,7 @@
         }
       }
 
-      function finishRequestPerformance(measurement, outcome) {
+      function finishRequestPerformance(measurement, outcome, options) {
         if (!measurement) return;
         // **期限切れは network_error と別物である。**
         // outcome を決める呼出側は10箇所あり、すべて BAD_RESPONSE かどうかの2分岐で、
@@ -935,6 +964,10 @@
             sequence: ++performanceSequence,
             action: measurement.action,
             outcome,
+            // **後続の試行に取って代わられた計測。** 率の母数から外すために印を付ける
+            // （→ fetchReadJsonWithRetry_）。既存データにこの印は無く、
+            // **無い＝最終試行として扱われる。過去の集計値は動かない。**
+            superseded: Boolean(options && options.superseded),
             camera: measurement.camera,
             scan: summarizeScanPerformance(measurement.scanMetrics),
             api: {
