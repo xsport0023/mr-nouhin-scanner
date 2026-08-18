@@ -289,6 +289,12 @@
       let completionConsolidation = '';
       let completionCarrier = '';
       let completionDiagnosticCarrier = 'sagawa';
+      // **対応していない運送会社コードを検出した印。**
+      // これを立てないと、submitCompletionOrderScan_ の finally が
+      // completionStep === 'orders' を見て returnToCamera() を呼び、
+      // **拒否したのに注文QRの読取が再開する**（→ returnToCamera は
+      // beginScanCycle と scheduleScan を両方呼ぶ）。
+      let completionCarrierBlocked = false;
       let completionStep = '';
       let completionOrders = [];
       let completionRawTrackingValue = '';
@@ -697,7 +703,9 @@
         const videoWidth = video.videoWidth || 0;
         const videoHeight = video.videoHeight || 0;
         const labelProfile = scanProfile_() === 'label';
-        const config = labelProfile ? completionScanConfig_() : { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION };
+        // **null のときヤマトへ寄せない。** 汎用の枠に落とす（会社未確定の診断用）
+        const config = (labelProfile ? completionScanConfig_() : null)
+          || { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION };
         const shortSide = Math.min(videoWidth, videoHeight);
         const sourceWidth = Math.floor((labelProfile ? videoWidth : shortSide) * config.widthFraction);
         const sourceHeight = Math.floor(shortSide * config.heightFraction);
@@ -1479,9 +1487,28 @@
         return '';
       }
 
+      // **未知の会社をヤマトへ寄せない。** 以前は `|| COMPLETION_SCAN_CONFIG.yamato`
+      // だったため、対応していない会社コードでも「ヤマトとして読み取った」という
+      // **もっともらしい誤結果**になった。設定が無ければ null を返し、
+      // 呼び出し側に判断させる（→ handoff_20260813 4-1 と同型）。
+      // own property で見るのは `toString` 等がすり抜けるため。
       function completionScanConfig_() {
         const carrier = isPreviewDiagnostic_() ? completionDiagnosticCarrier : normalizeCompletionCarrier_(completionCarrier);
-        return COMPLETION_SCAN_CONFIG[carrier] || COMPLETION_SCAN_CONFIG.yamato;
+        if (!carrier) return null;
+        if (!Object.prototype.hasOwnProperty.call(COMPLETION_SCAN_CONFIG, carrier)) return null;
+        return COMPLETION_SCAN_CONFIG[carrier];
+      }
+
+      /** 会社が確定できず伝票読取へ進めないときの表示。**読取は始めない。** */
+      function rejectUnsupportedCompletionCarrier_() {
+        completionCarrierBlocked = true;
+        scanning = false;
+        cancelScheduledScan();
+        scanGeneration += 1;
+        decodeInFlight = false;
+        showError('対応していない運送会社コードです（' + String(completionCarrier || '(空)')
+          + '）。発送準備ログを確認してください。発送ID: ' + String(completionSessionShipmentId || '(未確定)'),
+        returnHome_, 'モード選択へ戻る');
       }
 
       async function startShippingMode() {
@@ -1807,7 +1834,8 @@
 
       async function decodeFrame() {
         const labelProfile = scanProfile_() === 'label';
-        const scanConfig = labelProfile ? completionScanConfig_() : { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION, shape: 'square' };
+        const scanConfig = (labelProfile ? completionScanConfig_() : null)
+          || { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION, shape: 'square' };
         const shortSide = Math.min(video.videoWidth, video.videoHeight);
         const sourceWidth = Math.floor((labelProfile ? video.videoWidth : shortSide) * scanConfig.widthFraction);
         const sourceHeight = Math.floor(shortSide * scanConfig.heightFraction);
@@ -1997,6 +2025,7 @@
       }
 
       async function submitCompletionOrderScan_(orderId, sessionShipmentId) {
+        completionCarrierBlocked = false;   // 新しい照会ごとに落とす
         requestInFlight = true;
         setScanFeedback(true, '注文QR読取済み・照会中…');
         let measurement = null;
@@ -2035,7 +2064,10 @@
         } finally {
           requestInFlight = false;
           setScanFeedback(false);
-          if (currentMode === 'shipping-complete' && completionStep === 'orders') returnToCamera();
+          // **拒否したときは再開させない。** returnToCamera は beginScanCycle と
+          // scheduleScan を呼ぶので、ここを素通りさせると「止めたのに読み続ける」
+          if (currentMode === 'shipping-complete' && completionStep === 'orders'
+            && !completionCarrierBlocked) returnToCamera();
         }
       }
 
@@ -2069,6 +2101,9 @@
           showToast(`注文数が不足しています（${completionOrders.length}/${completionExpectedOrderCount}件）。読み残しを確認してください。`, 'error');
           return;
         }
+        // **カメラを回す前に会社を確かめる。** ここを通さないと、対応していない
+        // 会社の伝票を別会社のROIで読み取ってしまう
+        if (!completionScanConfig_()) { rejectUnsupportedCompletionCarrier_(); return; }
         completionStep = 'label';
         requestInFlight = false;
         scanning = false;
