@@ -158,7 +158,7 @@
         <button id="completion-single-parcel-button" class="choice-button ship" type="button">まとめ発送</button>
         <button id="completion-diagnostic-button" class="choice-button" type="button" hidden>伝票読取を診断（プレビュー）</button>
         <label id="completion-diagnostic-carrier-wrap" class="debug-option" hidden>診断する運送会社
-          <select id="completion-diagnostic-carrier"><option value="sagawa">佐川急便（帯ROI）</option><option value="yamato">ヤマト運輸（帯ROI）</option><option value="clickpost">クリックポスト（帯ROI）</option></select>
+          <select id="completion-diagnostic-carrier"><option value="sagawa">佐川急便（帯ROI）</option><option value="yamato">ヤマト運輸（帯ROI）</option><option value="yupack">ゆうパック（帯ROI）</option><option value="clickpost">クリックポスト（帯ROI）</option></select>
         </label>
         <button id="completion-back-button" class="choice-button" type="button">モード選択へ戻る</button>
       </div>
@@ -331,11 +331,41 @@
       const JAPANESE_PREFECTURES = ['北海道','青森県','岩手県','宮城県','秋田県','山形県','福島県','茨城県','栃木県','群馬県','埼玉県','千葉県','東京都','神奈川県','新潟県','富山県','石川県','福井県','山梨県','長野県','岐阜県','静岡県','愛知県','三重県','滋賀県','京都府','大阪府','兵庫県','奈良県','和歌山県','鳥取県','島根県','岡山県','広島県','山口県','徳島県','香川県','愛媛県','高知県','福岡県','佐賀県','長崎県','熊本県','大分県','宮崎県','鹿児島県','沖縄県'];
       const SCAN_INTERVAL_MS = 16;
       const SCAN_ROI_FRACTION = 0.75;
-      const COMPLETION_SCAN_CONFIG = {
-        sagawa: { shape: 'band', widthFraction: 0.75, heightFraction: 0.38, hint: '横長の枠に、読みたいバーコードを1本収めてください' },
-        yamato: { shape: 'band', widthFraction: 0.75, heightFraction: 0.38, hint: '横長の枠に、読みたいバーコードを1本収めてください' },
-        clickpost: { shape: 'band', widthFraction: 0.75, heightFraction: 0.38, hint: '横長の枠に、読みたいバーコードを1本収めてください' }
+      /**
+       * 画面側の運送会社の正本。**表示名・プルダウン・ROI・正規化をすべてここから引く。**
+       *
+       * 【なぜ表に寄せたか】
+       *  以前は同じ内容が5箇所に散っていた。表示名の三項演算子、完了内訳のローカル表、
+       *  プルダウンの配列、ROI設定、診断用の select である。
+       *  **会社を1つ足すと、漏れる機会が5つできる。**8/12に「片方だけ直して鏡像が残る」を
+       *  4回繰り返している（→ handoff_20260813 7章）。
+       *
+       * selectable:
+       *   always            … 個別・まとめのどちらでも選べる
+       *   individual_parcel … 個別発送の宅配便行でだけ選べる（クリックポスト）
+       *
+       * **GAS側の MANUAL_SELECTABLE_CARRIERS_ と意味を合わせること。**
+       * 画面で選べても、サーバーが弾けば確定できない。
+       */
+      const CARRIER_BAND_ROI_ = { shape: 'band', widthFraction: 0.75, heightFraction: 0.38, hint: '横長の枠に、読みたいバーコードを1本収めてください' };
+      const CARRIER_UI_ = {
+        sagawa: { label: '佐川急便', aliases: ['sagawa', '佐川'], roi: CARRIER_BAND_ROI_, selectable: 'always' },
+        yamato: { label: 'ヤマト運輸', aliases: ['yamato', 'ヤマト'], roi: CARRIER_BAND_ROI_, selectable: 'always' },
+        // 【2026-08-18】ゆうパック。宅配便なので個別・まとめのどちらでも選べる。
+        // ROIは実測3社と同じ帯。**初回の実機診断でQR2個と同一バーコード2箇所を観測してから確定する。**
+        yupack: { label: 'ゆうパック', aliases: ['yupack', 'ゆうパック'], roi: CARRIER_BAND_ROI_, selectable: 'always' },
+        clickpost: { label: 'クリックポスト', aliases: ['clickpost', 'クリック'], roi: CARRIER_BAND_ROI_, selectable: 'individual_parcel' }
       };
+
+      const COMPLETION_SCAN_CONFIG = Object.keys(CARRIER_UI_).reduce((out, code) => {
+        out[code] = CARRIER_UI_[code].roi; return out;
+      }, {});
+
+      /** 表示名。**独自の対応表を作らない。** 未知コードはコードのまま出す（隠さない）。 */
+      function carrierUiLabel_(carrier) {
+        const code = String(carrier || '');
+        return Object.prototype.hasOwnProperty.call(CARRIER_UI_, code) ? CARRIER_UI_[code].label : (code || '不明');
+      }
       const COMPLETION_LABEL_CANVAS_WIDTH = 1920;
       const ZXING_BARCODE_FORMAT_NAMES = {
         0: 'AZTEC', 1: 'CODABAR', 2: 'CODE_39', 3: 'CODE_93', 4: 'CODE_128',
@@ -1479,12 +1509,13 @@
         startCamera().then(maybeShowInstallHint);
       }
 
+      // **別名も CARRIER_UI_ が正本。** 会社を足したとき、正規化だけ漏れるのを防ぐ。
       function normalizeCompletionCarrier_(value) {
         const raw = String(value || '').toLowerCase();
-        if (raw.includes('sagawa') || raw.includes('佐川')) return 'sagawa';
-        if (raw.includes('yamato') || raw.includes('ヤマト')) return 'yamato';
-        if (raw.includes('clickpost') || raw.includes('クリック')) return 'clickpost';
-        return '';
+        if (!raw) return '';
+        const hit = Object.keys(CARRIER_UI_).find(code =>
+          CARRIER_UI_[code].aliases.some(alias => raw.includes(String(alias).toLowerCase())));
+        return hit || '';
       }
 
       // **未知の会社をヤマトへ寄せない。** 以前は `|| COMPLETION_SCAN_CONFIG.yamato`
@@ -2778,7 +2809,7 @@
       }
 
       function carrierLabel_(carrier) {
-        return carrier === 'sagawa' ? '佐川急便' : carrier === 'yamato' ? 'ヤマト運輸' : carrier === 'clickpost' ? 'クリックポスト' : carrier || '不明';
+        return carrierUiLabel_(carrier);
       }
 
       function renderShippingList() {
@@ -2969,12 +3000,13 @@
           select.className = 'carrier-confirmation-select';
           select.setAttribute('aria-label', `${labelText}の運送会社`);
           select.appendChild(new Option('選択してください', '', true, false));
-          const carrierOptions = [['sagawa', '佐川急便'], ['yamato', 'ヤマト運輸']];
-          // クリックポストは個別発送の宅配便行でのみ手動選択できる。
-          // まとめ発送はトップレベル選択であり、クリックポスト対象外なので追加しない。
-          if (itemIndex !== null && shippingMethod === 'parcel') {
-            carrierOptions.push(['clickpost', 'クリックポスト']);
-          }
+          // **選べる範囲は CARRIER_UI_ の selectable が決める。** ここに条件を書き足さない。
+          // individual_parcel は個別発送の宅配便行だけ（まとめ発送はトップレベル選択のため対象外）。
+          const isIndividualParcelRow = itemIndex !== null && shippingMethod === 'parcel';
+          const carrierOptions = Object.keys(CARRIER_UI_)
+            .filter(code => CARRIER_UI_[code].selectable === 'always'
+              || (CARRIER_UI_[code].selectable === 'individual_parcel' && isIndividualParcelRow))
+            .map(code => [code, CARRIER_UI_[code].label]);
           carrierOptions.forEach(([value, text]) => {
             const option = new Option(text, value);
             select.appendChild(option);
@@ -3110,7 +3142,7 @@
         warnings.forEach(warning => { const li = document.createElement('div'); li.textContent = `・${warning}`; warningList.appendChild(li); });
         const itemCount = artifacts.reduce((sum, artifact) => sum + (Number(artifact.item_count) || 0), 0);
         document.getElementById('complete-message').textContent = `Dropboxに保存しました（${itemCount || shippingItems.length}件）`;
-        const carrierLabels = { sagawa: '佐川急便', yamato: 'ヤマト運輸', clickpost: 'クリックポスト' };
+        const carrierLabels = Object.keys(CARRIER_UI_).reduce((out, code) => { out[code] = CARRIER_UI_[code].label; return out; }, {});
         const breakdown = new Map();
         artifacts.forEach(artifact => {
           const key = artifact.carrier || '不明';
