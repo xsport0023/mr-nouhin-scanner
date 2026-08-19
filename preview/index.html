@@ -140,7 +140,7 @@
       </div>
       <label class="debug-option"><input id="perf-toggle" type="checkbox">速度を計測する</label>
       <label class="debug-option"><input id="perf-display-toggle" type="checkbox">計測結果を表示する</label>
-      <div id="perf-actions" class="choice-list" hidden><button id="perf-copy-button" class="choice-button" type="button">診断結果をコピー</button><button id="perf-clear-button" class="choice-button" type="button">診断データを消去</button></div>
+      <div id="perf-actions" class="choice-list" hidden><button id="perf-send-button" class="choice-button" type="button">診断データを送信</button><button id="perf-copy-button" class="choice-button" type="button">診断結果をコピー</button><button id="perf-clear-button" class="choice-button" type="button">診断データを消去</button></div>
     </div>
   </section>
   <section id="carrier-screen" class="screen" aria-label="発送方法選択">
@@ -273,6 +273,7 @@
       const perfActions = document.getElementById('perf-actions');
       const perfPanel = document.getElementById('perf-panel');
       const perfOutput = document.getElementById('perf-output');
+      const perfSendButton = document.getElementById('perf-send-button');
       const perfCopyButton = document.getElementById('perf-copy-button');
       const perfClearButton = document.getElementById('perf-clear-button');
       const homeButton = document.getElementById('home-button');
@@ -442,10 +443,17 @@
         return {
           // **2 で読取側の指標を増やした。** 1 のレコードには decode/試行の値が無い。
           // 集計は有限値だけを拾うので、混在しても壊れない。
-          schemaVersion: 2,
+          // **3 で件数（item_count）と送信済みの印（sentAt）を足した。**
+          // 件数が無いと「20件バッチのp95」を集計から取り出せない。
+          schemaVersion: 3,
           capturedAt: new Date().toISOString(),
           action: result.action,
           outcome: result.outcome,
+          // **締めの件数。** これが無いと、5件のバッチと20件のバッチが混ざった
+          // p95 しか出せない（→ canary計測の合格条件は「20件バッチで」である）。
+          itemCount: Number.isFinite(result.itemCount) ? result.itemCount : null,
+          traceRid: result.traceRid || '',
+          sentAt: null,
           superseded: result.superseded === true,
           api: {
             fetchRttMs: api.fetchRttMs, headersMs: api.headersMs, bodyDownloadMs: api.bodyDownloadMs,
@@ -469,11 +477,17 @@
         };
       }
 
+      // **itemCount は options から result へ運ぶ。** 通し忘れると常に null になる。
+      // **保存の1行を関数にした。** 送信の印を付けたあとにも同じ保存が要る。
+      function persistPerformanceSamples_() {
+        try { localStorage.setItem(PERF_SAMPLES_STORAGE_KEY, JSON.stringify(performanceSamples)); } catch (error) { /* 診断保存の失敗で業務を止めない */ }
+      }
+
       function savePerformanceSample_(result) {
         if (!debugPerformanceEnabled) return;
         performanceSamples.unshift(diagnosticSample_(result));
         performanceSamples = performanceSamples.slice(0, PERF_SAMPLE_LIMIT);
-        try { localStorage.setItem(PERF_SAMPLES_STORAGE_KEY, JSON.stringify(performanceSamples)); } catch (error) { /* 診断保存の失敗で業務を止めない */ }
+        persistPerformanceSamples_();
       }
 
       function percentile_(values, fraction) {
@@ -897,6 +911,8 @@
         const measurement = {
           action,
           logicalRequestId: options.logicalRequestId || '',
+          // **締めの件数。** ここで拾わないと、result まで届かず常に null になる。
+          itemCount: Number.isFinite(options.itemCount) ? options.itemCount : null,
           transportAttempt: Number.isFinite(options.transportAttempt) ? options.transportAttempt : null,
           scanMetrics,
           camera: cameraPerformanceSnapshot(),
@@ -1074,6 +1090,9 @@
               scanToResultMs: measurement.scanToResultMs
             },
             serverMarks: measurement.serverMarks,
+            itemCount: measurement.itemCount,
+            // **1件を追うための鍵。** シートで並べたとき、画面の trace と突き合わせられる。
+            traceRid: measurement.logicalRequestId || '',
             jsonAndRenderMs,
             totalMs: Number.isFinite(totalStartedAt) ? paintedAt - totalStartedAt : null
           };
@@ -3156,7 +3175,8 @@
             ...(destination ? { consolidated_destination: destination } : {}),
             ...(Object.keys(issueResolutions).length ? { issue_resolutions: issueResolutions } : {})
           }, { logicalRequestId: finalizeRequestId, transportAttempt: finalizeTransportAttempt });
-          const result = await fetchJsonWithPerformance('ship_prep_finalize', request.body, null, request.options);
+          const result = await fetchJsonWithPerformance('ship_prep_finalize', request.body, null,
+            Object.assign({}, request.options, { itemCount: items.length }));
           const data = result.data;
           measurement = result.measurement;
           if (handleAuthError(data)) { finalizeInFlight = false; finishRequestPerformance(measurement, 'auth_error'); return; }
@@ -3447,6 +3467,54 @@
         try { localStorage.setItem(PERF_VISIBLE_STORAGE_KEY, debugPerformanceVisible ? '1' : '0'); } catch (error) { /* 保存不可でも表示は続ける */ }
         renderPerformancePanel();
       });
+      // **未送信のぶんだけ送る。** 押すたびに全件を送ると、シートに同じ行が積み上がる。
+      // 送れたものへ印を付けるので、続けて押しても増えない。
+      async function sendPerformanceSamples_() {
+        const pending = performanceSamples.filter(item => !item.sentAt);
+        if (!pending.length) { showToast('送っていない計測データはありません。', 'success'); return; }
+        perfSendButton.disabled = true;
+        try {
+          const request = buildApiRequest_({
+            action: 'perf_log', id_token: idToken,
+            samples: pending.map(perfLogPayload_)
+          });
+          const result = await fetchJsonWithPerformance('perf_log', request.body, null, request.options);
+          const data = result.data;
+          if (handleAuthError(data)) return;
+          if (!data || data.ok !== true) { showToast('送信できませんでした。', 'error'); return; }
+          if (data.error) { showToast('保存に失敗しました: ' + data.error, 'warning'); return; }
+          // **送れた件数ぶんだけ印を付ける。** 上限で切られた分は次回へ残す。
+          const appended = Number(data.appended) || 0;
+          const stamp = new Date().toISOString();
+          pending.slice(0, appended).forEach(item => { item.sentAt = stamp; });
+          persistPerformanceSamples_();
+          showToast(appended + '件を送信しました。', 'success');
+        } catch (error) {
+          // **計測の送信で業務を止めない。** ここで throw しない。
+          showToast('送信できませんでした（通信）。あとでもう一度お試しください。', 'warning');
+        } finally {
+          perfSendButton.disabled = false;
+        }
+      }
+
+      // シートの列に合わせて平たくする（GAS側 PERF_LOG_HEADER_ と対）
+      function perfLogPayload_(item) {
+        const api = item.api || {};
+        const scan = item.scan || {};
+        const render = item.render || {};
+        return {
+          captured_at: item.capturedAt, action: item.action, outcome: item.outcome,
+          item_count: Number.isFinite(item.itemCount) ? item.itemCount : null,
+          detect_wait_ms: scan.detectWaitMs, decode_max_ms: scan.decodeMaxMs,
+          attempt_count: scan.attemptCount, interval_max_ms: scan.intervalMaxMs,
+          rtt_ms: api.fetchRttMs, server_ms: api.serverTotalMs,
+          transport_ms: api.transportOverheadMs, total_ms: render.totalMs,
+          timeout_ms: api.timeoutMs, timed_out: api.timedOut === true,
+          transport_attempt: api.transportAttempt, trace_rid: item.traceRid || ''
+        };
+      }
+
+      perfSendButton.addEventListener('click', sendPerformanceSamples_);
       perfCopyButton.addEventListener('click', async () => {
         const text = performanceSummaryMarkdown_();
         try {
