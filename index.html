@@ -440,7 +440,9 @@
       function diagnosticSample_(result) {
         const api = result.api || {};
         return {
-          schemaVersion: 1,
+          // **2 で読取側の指標を増やした。** 1 のレコードには decode/試行の値が無い。
+          // 集計は有限値だけを拾うので、混在しても壊れない。
+          schemaVersion: 2,
           capturedAt: new Date().toISOString(),
           action: result.action,
           outcome: result.outcome,
@@ -452,7 +454,17 @@
             transportAttempt: api.transportAttempt, responseStatus: api.responseStatus
           },
           render: { jsonAndRenderMs: result.jsonAndRenderMs, totalMs: result.totalMs },
-          scan: { detectWaitMs: result.scan && result.scan.detectWaitMs, feedbackPaintMs: result.scan && result.scan.feedbackPaintMs },
+          // **読取が遅い理由を、あとから分布で見られるようにする。**
+          // `detectWaitMs` だけだと「QRを構えるまでの人の時間」と「デコードが遅い」を
+          // 区別できない。**試行回数とデコード時間を並べて初めて分かれる。**
+          scan: {
+            detectWaitMs: result.scan && result.scan.detectWaitMs,
+            feedbackPaintMs: result.scan && result.scan.feedbackPaintMs,
+            attemptCount: result.scan && result.scan.attemptCount,
+            decodeAverageMs: result.scan && result.scan.decodeAverageMs,
+            decodeMaxMs: result.scan && result.scan.decodeMaxMs,
+            intervalMaxMs: result.scan && result.scan.intervalMaxMs
+          },
           serverMarks: (result.serverMarks || []).map(mark => ({ label: mark.label, at: mark.at }))
         };
       }
@@ -495,6 +507,13 @@
           const server = reached.map(item => item.api && item.api.serverTotalMs);
           const transport = reached.map(item => item.api && item.api.transportOverheadMs);
           const total = reached.map(item => item.render && item.render.totalMs);
+          // **読取側は到達したかどうかに関係なく数える。** 読めてから送信に失敗した分も、
+          // 「読むのにどれだけかかったか」の材料としては同じ資格がある。
+          // `detectWaitMs` は schemaVersion 1 から保存しているので、**過去の分も遡れる。**
+          const detectWait = finals.map(item => item.scan && item.scan.detectWaitMs);
+          const decodeMax = finals.map(item => item.scan && item.scan.decodeMaxMs);
+          const attempts = finals.map(item => item.scan && item.scan.attemptCount);
+          const intervalMax = finals.map(item => item.scan && item.scan.intervalMaxMs);
           return {
             action: group.action, n: finals.length, reached: reached.length, notReached, unknown,
             // **api.timedOut も数える。** outcome の分類を直す前に保存されたレコードは
@@ -515,6 +534,12 @@
             p50ServerMs: percentile_(server, 0.5), p95ServerMs: percentile_(server, 0.95),
             p50TransportMs: percentile_(transport, 0.5), p95TransportMs: percentile_(transport, 0.95),
             p50TotalMs: percentile_(total, 0.5), p95TotalMs: percentile_(total, 0.95),
+            detectWaitN: detectWait.filter(Number.isFinite).length,
+            p50DetectWaitMs: percentile_(detectWait, 0.5), p95DetectWaitMs: percentile_(detectWait, 0.95),
+            decodeMaxN: decodeMax.filter(Number.isFinite).length,
+            p50DecodeMaxMs: percentile_(decodeMax, 0.5), p95DecodeMaxMs: percentile_(decodeMax, 0.95),
+            p50Attempts: percentile_(attempts, 0.5), p95Attempts: percentile_(attempts, 0.95),
+            p95IntervalMaxMs: percentile_(intervalMax, 0.95),
             outcomes: finals.reduce((out, item) => { out[item.outcome] = (out[item.outcome] || 0) + 1; return out; }, {})
           };
         });
@@ -531,6 +556,14 @@
           // 同じ表へ混ぜると読み違える。出るのは再試行が起きたactionだけ。
           if (row.retriedAway || row.rescued) {
             lines.push(`  - 再試行: 1回目失敗${row.retriedAway}（うち期限切れ${row.retriedAwayTimeout}） / 2回目で到達${row.rescued}`);
+          }
+          // **読取側は別行に出す。** 表へ列を足すと横に伸びて読めなくなる。
+          // 出るのは読取のあるactionだけ。**検出待ちは過去のレコードにも入っている。**
+          if (row.detectWaitN) {
+            const decode = row.decodeMaxN
+              ? `デコード最大 p50/p95 ${formatMs(row.p50DecodeMaxMs)}/${formatMs(row.p95DecodeMaxMs)} / 試行 p50/p95 ${row.p50Attempts}/${row.p95Attempts}回 / 試行間隔最大 p95 ${formatMs(row.p95IntervalMaxMs)}`
+              : 'デコードは未記録（旧レコード）';
+            lines.push(`  - 読取: 検出待ち p50/p95 ${formatMs(row.p50DetectWaitMs)}/${formatMs(row.p95DetectWaitMs)}（n=${row.detectWaitN}） / ${decode}`);
           }
         });
         return lines.join('\n');
@@ -943,7 +976,12 @@
 
       function requestTimeoutMs_(action) {
         if (action === 'ship_done_probe') return 3000;
-        if (action === 'ship_prep_finalize') return 28000;
+        // **2026-08-19: 28秒から40秒へ。** 締めが Shopify から正本を取り直すように
+        // なり、サーバー側の時間が1往復ぶん増える（→ 監査 P1-02）。
+        // **実測で RTT p95 が既に25.9秒**あり、28秒との余裕は約2秒しか無かった。
+        // 締めは再送が安全（同じ確定IDなら同じ結果を返す）なので、**待って成功する
+        // ほうが業務が進む。** 期限を20秒へ延ばしたときと同じ判断である。
+        if (action === 'ship_prep_finalize') return 40000;
         if (action === 'print') return 45000;
         if (action === 'ship_done_execute') return 60000;
         if (action === 'ship_done_plan') return 30000;
@@ -3043,9 +3081,25 @@
         return resolutions;
       }
 
+      // **サーバーが出す issue コードは、ここに全部あること。**
+      // 落ちると `labels[code] || code` で生のコードが作業者の画面に出る。
+      // 2026-08-19 時点で9件が抜けていた（今日足したコードと、それ以前からの3件）。
+      // 抜けは tests/ship_prep_issue_label_contract_test.js が機械的に見る。
       function shippingIssueLabel(code) {
         const labels = {
           SHIPPING_METHOD_UNKNOWN: '配送方法不明',
+          SHIPPING_METHOD_UNSUPPORTED: '対応していない配送方法',
+          CONSOLIDATE_REQUIRES_PARCEL: 'まとめられるのは宅配便だけ',
+          DESTINATION_INCOMPLETE: '宛先が不足しています',
+          DESTINATION_FIELD_INVALID: '宛先の項目が不正です',
+          POSTAL_CODE_INVALID: '郵便番号が不正です',
+          PHONE_INVALID: '電話番号が不正です',
+          ORDER_ID_INVALID: '注文の指定が不正です',
+          ORDER_ID_DUPLICATED: '同じ注文が重複しています',
+          STORE_UNKNOWN: '発送元ストアを特定できません',
+          ORDER_NOT_FOUND: 'Shopifyで注文が見つかりません',
+          ORDER_AMBIGUOUS: '同じ注文IDが複数ストアにあります',
+          ORDER_CANCELLED: '取り消された注文が含まれています',
           CONSOLIDATED_DESTINATION_REQUIRED: 'まとめ発送の送付先が必要',
           CLICKPOST_CANNOT_CONSOLIDATE: 'クリックポストはまとめ不可',
           MULTI_STORE_CANNOT_CONSOLIDATE: '複数ストアはまとめ不可',
@@ -3110,6 +3164,13 @@
             finalizeInFlight = false;
             requestInFlight = false;
             if (Array.isArray(data.issues)) renderShippingIssues(data);
+            // **処理中は「失敗」ではない。** 同じ確定IDの別の実行が、いま成果物を
+            // 作っている最中である（→ 監査 P1-11）。ここで作業者を放り出すと、
+            // **成功しているのに失敗したと思わせる。** そのままP7の照会へ回す。
+            else if (data.error_code === 'FINALIZE_IN_PROGRESS') {
+              showToast(data.error || 'この発送確定は処理中です。結果を確認します。', 'warning');
+              await checkShipPrepStatus_({ automatic: true });
+            }
             else { showToast(data.error || '発送準備を確定できませんでした。', 'error'); showScreen('team-destination-screen'); }
             finishRequestPerformance(measurement, 'api_error');
             return;
@@ -3195,6 +3256,16 @@
           renderShipPrepComplete_(data);
           showScreen('complete-screen');
           showToast('発送準備は確定済みです。', 'success');
+          return;
+        }
+        // **処理中と、途中で止まったのは別物である。**
+        // サーバーが `uploading` を返すのは、いま別の実行が成果物を作っている最中という
+        // 意味で、**まだ何も失敗していない。** ここを `partial` と同じ文言にすると、
+        // 正常に進んでいるのに担当者確認を促す誤表示になる。
+        // → docs/ship_prep_p1_11_close_20260819.md 3章
+        if (data.status === 'uploading') {
+          notice.textContent = 'この発送準備はいま処理中です。少し待ってから、もう一度「結果を確認する」を押してください。';
+          showScreen('ship-prep-status-screen');
           return;
         }
         notice.textContent = '発送準備は一部だけ記録されています。再実行せず、発送IDと台帳未記録の内容を担当者へ確認してください。';
