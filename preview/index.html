@@ -397,6 +397,11 @@
       const PERF_VISIBLE_STORAGE_KEY = 'scannerPerformanceVisibleV1';
       const PERF_SAMPLES_STORAGE_KEY = 'scannerPerformanceSamplesV1';
       const PERF_SAMPLE_LIMIT = 200;
+      // **保存する版と、読み込みで通す版は、同じ定数から決める。**
+      // 2026-08-19、ここを2つの数字に分けていたために、版を上げた日から
+      // **再読み込みのたびに計測が全部消えていた**（保存3・読込1固定）。
+      // 上げるのは1か所。読み込みは 1..この値 を受け入れる。
+      const PERF_SAMPLE_SCHEMA_VERSION = 3;
       let lastRequestCompletedAt = null;
       const MAX_PRINT_REQUESTS = 1;
       let printJobs = [];
@@ -427,7 +432,16 @@
           perfDisplayToggle.checked = debugPerformanceVisible;
           perfActions.hidden = !debugPerformanceEnabled;
           const saved = JSON.parse(localStorage.getItem(PERF_SAMPLES_STORAGE_KEY) || '[]');
-          performanceSamples = Array.isArray(saved) ? saved.filter(item => item && item.schemaVersion === 1).slice(0, PERF_SAMPLE_LIMIT) : [];
+          // **古い版は読める。新しい版は読めない。**
+          // 1 のレコードに decode/試行の値は無いが、集計は有限値だけを拾うので混在して
+          // 壊れない。逆に**この版より新しいものは解釈できない**ので通さない
+          // （新しい端末で書いたものを古い版が読む場合）。
+          performanceSamples = Array.isArray(saved)
+            ? saved.filter(item => item
+                && Number.isFinite(item.schemaVersion)
+                && item.schemaVersion >= 1
+                && item.schemaVersion <= PERF_SAMPLE_SCHEMA_VERSION).slice(0, PERF_SAMPLE_LIMIT)
+            : [];
         } catch (error) {
           performanceSamples = [];
           debugPerformanceEnabled = false;
@@ -445,7 +459,7 @@
           // 集計は有限値だけを拾うので、混在しても壊れない。
           // **3 で件数（item_count）と送信済みの印（sentAt）を足した。**
           // 件数が無いと「20件バッチのp95」を集計から取り出せない。
-          schemaVersion: 3,
+          schemaVersion: PERF_SAMPLE_SCHEMA_VERSION,
           capturedAt: new Date().toISOString(),
           action: result.action,
           outcome: result.outcome,
