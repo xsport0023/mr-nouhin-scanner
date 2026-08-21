@@ -113,6 +113,7 @@
     .address-form[hidden] { display:none; }
     #team-manual-fields:not([hidden]) { display:grid; gap:9px; }
     #team-manual-toggle { background:#2b3550; border:1px solid #52617f; color:#fff; }
+    #team-destination-refresh { background:#2b3550; border:1px solid #52617f; color:#fff; }
     .address-form label { color:var(--muted); font-size:12px; }
     .address-form input, .address-form select { width:100%; padding:10px; border:1px solid #52617f; border-radius:8px; background:#0e1320; color:#fff; font:inherit; appearance:none; -webkit-appearance:none; }
     .address-actions { display:flex; gap:9px; }
@@ -202,7 +203,7 @@
         <button id="single-parcel-button" class="choice-button ship" type="button">まとめ発送（1個口）</button>
       </div>
       <div id="representative-form" class="address-form">
-        <label>代表送付先（マスタ）<select id="team-destination-select"><option value="">選択してください</option></select></label>
+        <label>代表送付先（マスタ）<select id="team-destination-select"><option value="">選択してください</option></select></label><button id="team-destination-refresh" class="choice-button" type="button">送付先を最新にする</button>
         <button id="team-manual-toggle" class="choice-button" type="button">または、送付先を手入力する</button>
         <div id="team-manual-fields" hidden>
           <label>郵便番号<input id="team-postal-code" autocomplete="postal-code"></label>
@@ -3141,6 +3142,50 @@
         populateTeamPrefectures_();
       }
 
+      /**
+       * 代表送付先マスタを取り直す。**押した回だけ1往復する。**
+       *
+       * S1で context を営業日の間ずっと使い回すようにしたため、
+       * **日中にマスタを直しても、開いたままの端末には反映されない**
+       * （→ codex_review_s1s3_20260821.md 1-2）。
+       * サーバーはアプリへ何も送れないので、**取りに行く操作を人が持つ**しかない。
+       *
+       * **押し忘れは確定の直前でサーバーが止める**（`TEAM_DESTINATION_STALE`）。
+       * このボタンは、止められる前に直すための手段である。
+       *
+       * 運賃の版もここで新しくなるので、確認画面のサジェストも最新になる。
+       */
+      async function refreshTeamDestinations_() {
+        const button = document.getElementById('team-destination-refresh');
+        const previous = button.textContent;
+        button.disabled = true;
+        button.textContent = '更新しています…';
+        try {
+          const result = await fetchReadJsonWithRetry_(
+            'ship_prep_context', { action: 'ship_prep_context', id_token: idToken }, null);
+          const data = result.data;
+          if (handleAuthError(data)) return;
+          if (!data || data.ok !== true) {
+            showToast('送付先を更新できませんでした。', 'error');
+            finishRequestPerformance(result.measurement, 'api_error');
+            return;
+          }
+          // **選択中の値は残さない。** 消えた宛先を選んだままにしない
+          shippingContext = data;
+          serverEpochAtSync = Date.parse(data.server_now);
+          performanceNowAtSync = performance.now();
+          populateTeamDestinations(Array.isArray(data.team_destinations) ? data.team_destinations : []);
+          showToast('送付先を最新にしました。選び直してください。', 'success');
+          finishRequestPerformance(result.measurement, 'success');
+        } catch (error) {
+          // **業務を止めない。** 更新できなくても、確定の直前でサーバーが照合する
+          showToast('送付先を更新できませんでした（通信）。', 'warning');
+        } finally {
+          button.disabled = false;
+          button.textContent = previous;
+        }
+      }
+
       function populateTeamPrefectures_() {
         const select = document.getElementById('team-prefecture');
         if (!select) return;
@@ -3361,6 +3406,7 @@
           CARRIER_UNAVAILABLE_FOR_REGION: '地域で取り扱えない運送会社です',
           PREFECTURE_UNKNOWN: '都道府県を判定できません',
           CITY_NOT_MUNICIPALITY: '市区町村の表記が不完全です（例: 木更津 → 木更津市）',
+          TEAM_DESTINATION_STALE: '代表送付先が読み込み後に変わっています（更新して選び直す）',
           RATE_SNAPSHOT_UNAVAILABLE: '運賃情報を取得できません'
         };
         return labels[code] || code || '発送確認';
@@ -3628,6 +3674,7 @@
       document.getElementById('team-destination-select').addEventListener('change', event => {
         if (event.target.value) closeManualDestinationFields_();
       });
+      document.getElementById('team-destination-refresh').addEventListener('click', refreshTeamDestinations_);
       document.getElementById('team-manual-toggle').addEventListener('click', () => {
         document.getElementById('team-destination-select').value = '';
         document.getElementById('team-manual-fields').hidden = false;
