@@ -1481,6 +1481,9 @@
           return;
         }
         idToken = response.credential;
+        // **サインインのたびに捨てる。** 同じ人かどうかを端末側で判定しない。
+        // サインインはバッチごとには走らないので、S1の次バッチ高速化を損なわない
+        discardShippingContext_();
         completionRecoveryAccountBinding = await completionAccountBindingFromToken_(idToken);
         if (resumeContext) resumeAuthenticatedBatch();
         else if (!(await restoreCompletionRecoveryAfterSignIn_())) showModeSelect();
@@ -1558,6 +1561,7 @@
         requestInFlight = false;
         idToken = '';
         completionRecoveryAccountBinding = '';
+        discardShippingContext_();
         document.getElementById('signin-message').textContent = message || 'Googleアカウントでサインインしてください。';
         showScreen('signin-screen');
       }
@@ -1567,6 +1571,7 @@
         requestInFlight = false;
         idToken = '';
         completionRecoveryAccountBinding = '';
+        discardShippingContext_();
         document.getElementById('forbidden-message').textContent = 'このアカウントは許可リストに登録されていません。許可された別のGoogleアカウントでサインインしてください。';
         showScreen('forbidden-screen');
       }
@@ -1751,11 +1756,46 @@
        * **期限はサーバーが決める。** 端末側で「起動から何分」などと決めない。
        * 日付が変わったときに古いまま動くのを避けるためである。
        */
+      /**
+       * context と補正時計を捨てる。
+       *
+       * **認証主体が変わりうる場所すべてから呼ぶ。**
+       * 2026-08-21、codex-dev のレビューで、サインインし直しても
+       * `shippingContext` が残り、**別アカウントが前のユーザーの
+       * 団体送付先を使える**状態だと分かった（→ codex_review_s1s3_20260821.md 1-1）。
+       *
+       * いまは全許可ユーザーで中身が同じに見えるが、**認証主体をまたぐキャッシュを
+       * 許す契約にはしない。** 店舗・権限・担当チーム別の宛先が入った時に、
+       * これは情報の越境になる。
+       */
+      function discardShippingContext_() {
+        shippingContext = null;
+        serverEpochAtSync = null;
+        performanceNowAtSync = null;
+      }
+
+      /**
+       * いま有効とみなす時刻。**進んでいるほうを採る（fail-closed）。**
+       *
+       * 端末時計が遅れていれば、東京0時を過ぎても古い context を有効と誤判定する。
+       * 逆にバックグラウンドで `performance.now()` が止まる端末では、補正時計が進まない。
+       * **どちらか進んでいるほうを使えば、古いものを通しにくい**
+       * （→ codex_review_s1s3_20260821.md 1-4）。
+       *
+       * 早すぎる再取得は往復1回で済むが、**古い宛先で成果物を作るのは戻せない。**
+       */
+      function effectiveNowMs_() {
+        const wall = Date.now();
+        if (!Number.isFinite(serverEpochAtSync) || !Number.isFinite(performanceNowAtSync)) return wall;
+        const corrected = serverEpochAtSync + (performance.now() - performanceNowAtSync);
+        return Number.isFinite(corrected) ? Math.max(wall, corrected) : wall;
+      }
+
       function shippingContextStillValid_(ctx) {
         if (!ctx || ctx.ok !== true) return false;
         const expires = Date.parse(ctx.context_expires_at);
         if (!Number.isFinite(expires)) return false;   // 期限を読めないものは使わない
-        return Date.now() < expires;
+        return effectiveNowMs_() < expires;
       }
 
       /**
@@ -1775,7 +1815,7 @@
         currentMode = 'shipping';
         shippingItems = [];
         // **有効なうちは捨てない。** 捨てると必ず取りに行くことになる
-        if (!shippingContextStillValid_(shippingContext)) shippingContext = null;
+        if (!shippingContextStillValid_(shippingContext)) discardShippingContext_();
         pendingFinalize = null;
         pendingIssueData = null;
         finalizeInFlight = false;
