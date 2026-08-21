@@ -1006,15 +1006,32 @@
 
       function requestTimeoutMs_(action) {
         if (action === 'ship_done_probe') return 3000;
-        // **2026-08-19: 28秒から40秒へ。** 締めが Shopify から正本を取り直すように
-        // なり、サーバー側の時間が1往復ぶん増える（→ 監査 P1-02）。
-        // **実測で RTT p95 が既に25.9秒**あり、28秒との余裕は約2秒しか無かった。
-        // 締めは再送が安全（同じ確定IDなら同じ結果を返す）なので、**待って成功する
-        // ほうが業務が進む。** 期限を20秒へ延ばしたときと同じ判断である。
-        if (action === 'ship_prep_finalize') return 40000;
+        // ========== 2026-08-21: 期限をGASの実測へ寄せた ==========
+        //
+        // 【それまでの考え方】「待って成功するほうが業務が進む」。
+        // 8/19に finalize を28秒→40秒へ延ばしたのはこの判断による。
+        //
+        // 【なぜ逆転したか】**Apps Script の実行ログと突き合わせて、
+        // 期限切れの要求がGAS側では正常に完了していたことが分かった**
+        // （→ docs/transport_stability_data_20260821.md 3-3・7-1①）。
+        // 期限切れ3件はGAS側で 1.9 / 2.3 / 3.7 秒で完了していた。
+        // **失われているのは帰り道であって、処理が遅いのではない。**
+        // 応答が失われた要求は、待っても永久に来ない。**待つほど遅くなるだけ。**
+        //
+        // 【値の根拠】GAS実行ログ 292件・7日分（→ 同8章）。
+        //   p50 2.271秒 / p95 8.885秒 / p99 14.863秒 / **最大 18.424秒**
+        //   **20秒を超えた実行は0件。**
+        // 25000 は 18.424 × 1.36。**実行ログに action が出ず内訳が取れない**ため、
+        // 最大値へ余裕を足した。20000 でも292件を100%カバーする。
+        //
+        // **至上目的は速度である**（つながることではない）。
+        // 失敗1回あたり execute で35秒、finalize で15秒を捨てなくなる。
+        if (action === 'ship_prep_finalize') return 25000;   // 40000 から
+        // **print は据え置き。** クライアント側の計測サンプルが無く、
+        // 292件のどれが print かも分からない。**根拠が無いものは動かさない。**
         if (action === 'print') return 45000;
-        if (action === 'ship_done_execute') return 60000;
-        if (action === 'ship_done_plan') return 30000;
+        if (action === 'ship_done_execute') return 25000;   // 60000 から。実測最大の3.3倍だった
+        if (action === 'ship_done_plan') return 25000;      // 30000 から
         // **既定値は 8000 だった。8/13の実測156件で、未到達13件のうち9件が期限切れで、
         // その9件すべてが期限8秒の3つ（ship_prep_scan / ship_done_scan_order /
         // ship_prep_context）に集中していた。期限に余裕のある3つは0件である。**
@@ -1023,11 +1040,12 @@
         // 成功させている（期限28秒）。**回線は運びきっていた。切っていたのは期限の方。**
         // 到達RTTのp95が3つとも6.0〜6.2秒で揃うのは、8秒で切られた分布の頭打ちである。
         //
-        // **この3つは fetchReadJsonWithRetry_ で最大2回試すため、最悪待ちは
-        // 20秒 + 1.5秒 + 20秒 になる。** 8秒時代の 8+1.5+8=17.5秒より長い。
-        // それでも延ばすのは、17.5秒待った末に失敗させるより、待って成功するほうが
-        // 業務が進むからである。**再試行の回数を減らすかは、1回目の期限切れが
-        // 記録に残るようにしてから判断する**（いまは2回目が成功すると記録が消える）。
+        // **この3つ（scan / scan_order / context）は 20000 のまま。**
+        // 2026-08-21の実測最大 18.424秒に対して**1.09倍しかなく、削る余地が無い。**
+        //
+        // **短い1回目＋長い2回目**（例: 8秒→25秒）は検討したが、入れていない。
+        // 8秒は p95 とほぼ同じで93.8%を覆うが、**残り6.2%を切って再実行する**ことになり、
+        // 期待値では有利でも確実ではない。**実測で確かめてから入れる。**
         return 20000;
       }
 
@@ -1613,10 +1631,43 @@
         returnHome_, 'モード選択へ戻る');
       }
 
+      /**
+       * いま持っている context がまだ使えるか。
+       *
+       * **サーバーは最初から `context_expires_at`（翌0時 Asia/Tokyo）を返している。**
+       * それを1箇所も見ておらず、`startShippingMode()` が毎回取り直していた
+       * （→ docs/transport_stability_data_20260821.md 5-3）。
+       * **この関数は「次へ」からも呼ばれる**ので、バッチを締めるたびに
+       * 1営業日1回でよい情報を取りに行っていた。8/21は66秒の間に2回。
+       *
+       * **期限はサーバーが決める。** 端末側で「起動から何分」などと決めない。
+       * 日付が変わったときに古いまま動くのを避けるためである。
+       */
+      function shippingContextStillValid_(ctx) {
+        if (!ctx || ctx.ok !== true) return false;
+        const expires = Date.parse(ctx.context_expires_at);
+        if (!Number.isFinite(expires)) return false;   // 期限を読めないものは使わない
+        return Date.now() < expires;
+      }
+
+      /**
+       * context が手元にある前提で、読み取りを始める。
+       *
+       * **取得直後とキャッシュ利用時の両方から通る。** ここを分けないと、
+       * キャッシュを使った回だけ団体送付先やカメラの初期化が抜ける。
+       */
+      async function startShippingScanning_() {
+        const ctx = shippingContext || {};
+        populateTeamDestinations(Array.isArray(ctx.team_destinations) ? ctx.team_destinations : []);
+        await startCamera();
+        maybeShowInstallHint();
+      }
+
       async function startShippingMode() {
         currentMode = 'shipping';
         shippingItems = [];
-        shippingContext = null;
+        // **有効なうちは捨てない。** 捨てると必ず取りに行くことになる
+        if (!shippingContextStillValid_(shippingContext)) shippingContext = null;
         pendingFinalize = null;
         pendingIssueData = null;
         finalizeInFlight = false;
@@ -1624,6 +1675,11 @@
         finalizeRequestId = createRequestId('fin');
         finalizeTransportAttempt = 0;
         updateCameraMode();
+        // **使い回せるなら往復を1回省く。** 良い日で約4.1秒（サーバ2.2秒＋残差2.0秒）
+        if (shippingContext) {
+          await startShippingScanning_();
+          return;
+        }
         showLoading('発送準備の情報を取得しています…');
         let measurement = null;
         try {
@@ -1643,9 +1699,7 @@
           serverEpochAtSync = Date.parse(data.server_now);
           performanceNowAtSync = performance.now();
           if (!Number.isFinite(serverEpochAtSync)) throw new Error('サーバー時刻を確認できませんでした。');
-          populateTeamDestinations(Array.isArray(data.team_destinations) ? data.team_destinations : []);
-          await startCamera();
-          maybeShowInstallHint();
+          await startShippingScanning_();
           finishRequestPerformance(measurement, 'success');
         } catch (error) {
           measurement = error.performanceMeasurement || measurement;
