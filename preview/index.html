@@ -396,12 +396,19 @@
       const PERF_ENABLED_STORAGE_KEY = 'scannerPerformanceEnabledV1';
       const PERF_VISIBLE_STORAGE_KEY = 'scannerPerformanceVisibleV1';
       const PERF_SAMPLES_STORAGE_KEY = 'scannerPerformanceSamplesV1';
+      // P5（ship_done_execute）は外部更新を伴うので、応答を失っても再送しない。
+      // page reload / PWA再開後も同じplan_idのP6（読み取り専用）へ戻るための最小状態。
+      // **この契約を変えたらBUILDも上げる。** schemaだけ同じ旧コードを自動復元しない。
+      const COMPLETION_RECOVERY_STORAGE_KEY = 'scannerCompletionRecoveryV1';
+      const COMPLETION_RECOVERY_SCHEMA_VERSION = 1;
+      const COMPLETION_RECOVERY_BUILD = '20260821-s4-v1';
       const PERF_SAMPLE_LIMIT = 200;
       // **保存する版と、読み込みで通す版は、同じ定数から決める。**
       // 2026-08-19、ここを2つの数字に分けていたために、版を上げた日から
       // **再読み込みのたびに計測が全部消えていた**（保存3・読込1固定）。
       // 上げるのは1か所。読み込みは 1..この値 を受け入れる。
       const PERF_SAMPLE_SCHEMA_VERSION = 3;
+      let completionRecoveryAccountBinding = '';
       let lastRequestCompletedAt = null;
       const MAX_PRINT_REQUESTS = 1;
       let printJobs = [];
@@ -415,6 +422,104 @@
       let printBatchSettledAt = null;
       let resumeContext = null;
       let scanFeedbackToken = 0;
+
+      async function completionAccountBindingFromToken_(token) {
+        try {
+          const parts = String(token || '').split('.');
+          if (parts.length < 2) return '';
+          const encoded = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+          const padded = encoded + '='.repeat((4 - encoded.length % 4) % 4);
+          const claims = JSON.parse(atob(padded));
+          if (!claims || !claims.sub) return '';
+          // localStorageへメールアドレスやJWTを残さず、別アカウントへの持越しだけを防ぐ。
+          const source = String(claims.iss || '') + '|' + String(claims.sub);
+          if (!window.crypto || !window.crypto.subtle) return '';
+          const bytes = new Uint8Array(Array.from(source).map(char => char.charCodeAt(0) & 0xff));
+          const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+          return 'acct-v1-' + Array.from(new Uint8Array(digest))
+            .map(value => value.toString(16).padStart(2, '0')).join('');
+        } catch (error) {
+          return '';
+        }
+      }
+
+      function readCompletionRecoveryCapsule_() {
+        try {
+          const raw = localStorage.getItem(COMPLETION_RECOVERY_STORAGE_KEY);
+          if (!raw) return null;
+          try { return JSON.parse(raw); }
+          catch (error) { return { invalid_storage_record: true }; }
+        } catch (error) {
+          return null;
+        }
+      }
+
+      function validCompletionRecoveryCapsule_(capsule) {
+        return capsule
+          && capsule.schema_version === COMPLETION_RECOVERY_SCHEMA_VERSION
+          && capsule.build === COMPLETION_RECOVERY_BUILD
+          && capsule.state === 'execute_sent'
+          && typeof capsule.plan_id === 'string'
+          && /^SDP-[A-Za-z0-9-]{1,96}$/.test(capsule.plan_id)
+          && typeof capsule.logical_request_id === 'string'
+          && capsule.logical_request_id.length > 0
+          && capsule.logical_request_id.length <= 128
+          && typeof capsule.account_binding === 'string'
+          && capsule.account_binding.length > 0;
+      }
+
+      function persistCompletionRecoveryCapsule_(planId, logicalRequestId) {
+        if (!completionRecoveryAccountBinding) return false;
+        try {
+          const previous = readCompletionRecoveryCapsule_();
+          // 未解決の別planを上書きすると、そのexecuteを再読込後に追えなくなる。
+          if (previous && previous.plan_id !== planId) return false;
+          const capsule = {
+            schema_version: COMPLETION_RECOVERY_SCHEMA_VERSION,
+            build: COMPLETION_RECOVERY_BUILD,
+            state: 'execute_sent',
+            plan_id: planId,
+            logical_request_id: logicalRequestId,
+            sent_at: new Date().toISOString(),
+            account_binding: completionRecoveryAccountBinding
+          };
+          localStorage.setItem(COMPLETION_RECOVERY_STORAGE_KEY, JSON.stringify(capsule));
+          return true;
+        } catch (error) {
+          return false;
+        }
+      }
+
+      function clearCompletionRecoveryCapsule_() {
+        try { localStorage.removeItem(COMPLETION_RECOVERY_STORAGE_KEY); } catch (error) { /* 残れば次回も安全なstatusへ戻る */ }
+      }
+
+      function showCompletionRecoverySafeStop_(message) {
+        showError(message, showModeSelect, 'モード選択へ戻る');
+      }
+
+      async function restoreCompletionRecoveryAfterSignIn_() {
+        const capsule = readCompletionRecoveryCapsule_();
+        if (!capsule) return false;
+        if (!validCompletionRecoveryCapsule_(capsule)) {
+          showCompletionRecoverySafeStop_('前回の発送確定情報は、この版では安全に読み取れません。発送確定は再実行せず、担当者へ確認してください。');
+          return true;
+        }
+        if (!completionRecoveryAccountBinding || capsule.account_binding !== completionRecoveryAccountBinding) {
+          showCompletionRecoverySafeStop_('別のGoogleアカウントで開始した発送確定が残っています。発送確定は再実行せず、元のアカウントでサインインするか担当者へ確認してください。');
+          return true;
+        }
+
+        // 追跡番号は保存しない。P6はplan_idだけで正本を読み、表示もその応答から復元する。
+        currentMode = 'shipping-complete';
+        completionPlanId = capsule.plan_id;
+        completionRawTrackingValue = '';
+        completionConfirmedTracking = '';
+        completionCanStartNextShipment = false;
+        renderCompletionOutcomeUnknown_({ failureCode: 'CLIENT_TIMEOUT' });
+        await checkCompletionStatus_({ automatic: true, recovery: true });
+        return true;
+      }
 
       function nowMs() {
         return performance.now();
@@ -1370,14 +1475,15 @@
         });
       }
 
-      window.handleSignIn = function(response) {
+      window.handleSignIn = async function(response) {
         if (!response || !response.credential) {
           showSignIn('サインインに失敗しました。もう一度お試しください。');
           return;
         }
         idToken = response.credential;
+        completionRecoveryAccountBinding = await completionAccountBindingFromToken_(idToken);
         if (resumeContext) resumeAuthenticatedBatch();
-        else showModeSelect();
+        else if (!(await restoreCompletionRecoveryAfterSignIn_())) showModeSelect();
       };
 
       function showScreen(id) {
@@ -1451,6 +1557,7 @@
         stopCamera();
         requestInFlight = false;
         idToken = '';
+        completionRecoveryAccountBinding = '';
         document.getElementById('signin-message').textContent = message || 'Googleアカウントでサインインしてください。';
         showScreen('signin-screen');
       }
@@ -1459,6 +1566,7 @@
         stopCamera();
         requestInFlight = false;
         idToken = '';
+        completionRecoveryAccountBinding = '';
         document.getElementById('forbidden-message').textContent = 'このアカウントは許可リストに登録されていません。許可された別のGoogleアカウントでサインインしてください。';
         showScreen('forbidden-screen');
       }
@@ -2427,6 +2535,17 @@
         confirm.textContent = '発送確定中…';
         showLoading('発送確定を処理しています…\nShopify・追跡情報・顧客通知を確認中です。');
 
+        // 外部更新を送る**前**に復帰情報を残す。保存できない端末ではP5を送らない。
+        // 追跡番号とtokenはカプセルへ入れず、plan_idから読み取り専用P6だけを行う。
+        const executeLogicalRequestId = createRequestId('req');
+        if (!persistCompletionRecoveryCapsule_(completionPlanId, executeLogicalRequestId)) {
+          requestInFlight = false;
+          resetCompletionConfirmButton_();
+          showScreen('completion-result-screen');
+          showToast('発送確定の復帰情報を端末へ保存できません。発送確定は送信していません。端末の保存設定を確認してください。', 'error');
+          return;
+        }
+
         let measurement = null;
         try {
           const request = buildApiRequest_({
@@ -2434,7 +2553,7 @@
             id_token: idToken,
             plan_id: completionPlanId,
             confirmed_tracking: completionConfirmedTracking
-          });
+          }, { logicalRequestId: executeLogicalRequestId, transportAttempt: 1 });
           const result = await fetchJsonWithPerformance('ship_done_execute', request.body, null, request.options);
           const data = result.data;
           measurement = result.measurement;
@@ -2480,6 +2599,8 @@
         showScreen('completion-result-screen');
 
         if (result.complete === true) {
+          // 成功応答またはP6で complete:true を確認したときだけ復帰カプセルを消す。
+          clearCompletionRecoveryCapsule_();
           completionCanStartNextShipment = true;
           confirm.disabled = false;
           confirm.textContent = '次の発送へ';
@@ -2748,6 +2869,7 @@
         confirm.disabled = true;
 
         if (data.complete === true) {
+          clearCompletionRecoveryCapsule_();
           completionCanStartNextShipment = true;
           confirm.disabled = false;
           confirm.textContent = '次の発送へ';
@@ -3567,6 +3689,39 @@
       }
 
       // シートの列に合わせて平たくする（GAS側 PERF_LOG_HEADER_ と対）
+      /**
+       * サーバーのマークを「段階ごとの所要ms」へ畳む。
+       *
+       * **マークは既に取れている。** `lsaTimed_` が依存関数を包んで
+       * `rc.<name>#<n> start` / `... end` の形で出しており、応答の `_perf.marks` に載る。
+       * **足りないのは、それをシートへ落とす経路だけだった**
+       * （2026-08-21。claude-dev は最初「マークが無い」と誤って判断した。
+       *  `perfMark_(` をリテラルで grep して0件だったため。**包んで出す形を見落とした**）。
+       *
+       * **`start` と `end` の対だけを畳む。** 対にならないマーク
+       * （`shopify_order_fetched` のような単発）は所要が定義できないので出さない。
+       */
+      function serverStages_(marks) {
+        if (!Array.isArray(marks)) return [];
+        const started = new Map();
+        const out = [];
+        marks.forEach(mark => {
+          const label = String((mark && mark.label) || '');
+          const at = Number(mark && mark.at);
+          if (!Number.isFinite(at)) return;
+          if (label.endsWith(' start')) {
+            started.set(label.slice(0, -6), at);
+            return;
+          }
+          if (!label.endsWith(' end')) return;
+          const name = label.slice(0, -4);
+          if (!started.has(name)) return;   // end だけのものは捨てる
+          out.push({ stage: name, ms: at - started.get(name) });
+          started.delete(name);
+        });
+        return out;
+      }
+
       function perfLogPayload_(item) {
         const api = item.api || {};
         const scan = item.scan || {};
@@ -3579,7 +3734,9 @@
           rtt_ms: api.fetchRttMs, server_ms: api.serverTotalMs,
           transport_ms: api.transportOverheadMs, total_ms: render.totalMs,
           timeout_ms: api.timeoutMs, timed_out: api.timedOut === true,
-          transport_attempt: api.transportAttempt, trace_rid: item.traceRid || ''
+          transport_attempt: api.transportAttempt, trace_rid: item.traceRid || '',
+          // **7.2秒の中身。** 段階ごとの所要msを別タブへ落とす（→ 06_Diagnostics.gs）
+          stages: serverStages_(item.serverMarks)
         };
       }
 
