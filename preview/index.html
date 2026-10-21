@@ -359,6 +359,30 @@
         clickpost: { label: 'クリックポスト', aliases: ['clickpost', 'クリック'], roi: CARRIER_BAND_ROI_, selectable: 'individual_parcel' }
       };
 
+      /**
+       * 【2026-10-20 ネコポス追加】**運送会社ではない選択値**（決定レジスタ 12・13）。
+       *
+       * **CARRIER_UI_ に入れない。** CARRIER_UI_ は「伝票を読む会社」の表でもあり
+       * （完了スキャンの枠・診断の選択肢）、ネコポスの伝票はヤマトとして読む。
+       * 確認画面の選択肢にだけ足す。サーバーは選択値を（yamato, nekopos）へ写す。
+       *
+       * **GAS側の MANUAL_SELECTABLE_CARRIERS_・POSTIN_SELECTABLE_ と一致させること**
+       * （NP-12。tests/scanner_destination_flow_test.js が突き合わせる）。
+       */
+      // ★**`selectable` を先に書く。** tests/yupack_label_scan_test.js は「字下げ8つ＋`名前: { label:`」の行を
+      // CARRIER_UI_ の顔ぶれとして拾い、診断用の選択肢と突き合わせる。**ネコポスは CARRIER_UI_ でも
+      // 診断用の選択肢でもない**（伝票はヤマトとして読む）ので、その突き合わせに入れない
+      const SELECTION_EXTRA_UI_ = {
+        nekopos: { selectable: 'individual_parcel', label: 'ネコポス' }
+      };
+      /** ポストイン注文（配送方法 clickpost）の行の選択肢。**先頭が既定**（要件 R1） */
+      const POSTIN_SELECTABLE_ = ['nekopos', 'clickpost'];
+
+      /** 確認画面の選択値の表示名。**ネコポスは CARRIER_UI_ の外にある** */
+      function selectionUiLabel_(code) {
+        return Object.prototype.hasOwnProperty.call(SELECTION_EXTRA_UI_, code) ? SELECTION_EXTRA_UI_[code].label : carrierUiLabel_(code);
+      }
+
       const COMPLETION_SCAN_CONFIG = Object.keys(CARRIER_UI_).reduce((out, code) => {
         out[code] = CARRIER_UI_[code].roi; return out;
       }, {});
@@ -1476,11 +1500,51 @@
         });
       }
 
+      /**
+       * **2つ目の資格情報を捨てる。**（2026-08-26）
+       *
+       * 【なぜ要るか】
+       *  `initializeGoogleSignIn` は `renderButton`（画面上のボタン）と `prompt()`
+       *  （画面下のワンタップ）の両方を出し、**どちらも同じ `handleSignIn` を呼ぶ。**
+       *  `auto_select: true` なので、人が押さなくても届くことがある。
+       *
+       *  `handleSignIn` は `async` で途中に `await` があるため、2つ届くと処理が交錯する。
+       *  各回は `idToken` を上書きし、**`discardShippingContext_()` を呼ぶ。**
+       *  **2つ目が、1つ目のバッチ再開後に着地すると、走行中のコンテキストを捨てる。**
+       *
+       * 【なぜ「同じ人かどうか」で判定しないか】
+       *  `discardShippingContext_` の注記どおり、**端末側で同一人物の判定はしない。**
+       *  ここで判定を足すと、その決定を裏から覆すことになる。
+       *  **捨てるのは「処理中に届いた2つ目」と「サインイン画面を離れたあとに届いたもの」だけ。**
+       */
+      let signInHandling = false;
+      let lastHandledCredential = '';
+
       window.handleSignIn = async function(response) {
         if (!response || !response.credential) {
           showSignIn('サインインに失敗しました。もう一度お試しください。');
           return;
         }
+        // **処理中に届いた2つ目は捨てる。** 交錯させない
+        if (signInHandling) { console.warn('handleSignIn: 処理中に2つ目が届いた'); return; }
+        // **まったく同じ資格情報なら捨てる。** 同じサインインの重複配達である
+        if (response.credential === lastHandledCredential) {
+          console.warn('handleSignIn: 同じ資格情報が2度届いた'); return;
+        }
+        // **「サインイン済みなら捨てる」はしない。**
+        // 別アカウントへの切り替えを捨てることになり、**前のユーザーの宛先を使う**
+        // （tests/ship_prep_context_cache_test.js が、まさにこれを止めている）。
+        // **捨ててよいのは、同じサインインの重複だけである。**
+        lastHandledCredential = response.credential;
+        signInHandling = true;
+        try {
+          await handleSignInInner_(response);
+        } finally {
+          signInHandling = false;
+        }
+      };
+
+      async function handleSignInInner_(response) {
         idToken = response.credential;
         // **サインインのたびに捨てる。** 同じ人かどうかを端末側で判定しない。
         // サインインはバッチごとには走らないので、S1の次バッチ高速化を損なわない
@@ -3279,14 +3343,21 @@
           confirmedCarrier: consolidation === 'single_parcel' ? suggestedCarrierForDestination_(destination) : null,
           items: shippingItems.map(item => {
             if (consolidation === 'single_parcel') return { ...item };
-            return { ...item, confirmed_carrier: item.shipping_method === 'parcel' ? (item.suggested_carrier || '') : null };
+            if (item.shipping_method === 'parcel') return { ...item, confirmed_carrier: item.suggested_carrier || '' };
+            // 【2026-10-20 ネコポス追加】ポストイン行は **ネコポスが既定**（要件 R1）。人が確認画面で変えられる
+            if (item.shipping_method === 'clickpost') return { ...item, confirmed_carrier: POSTIN_SELECTABLE_[0] };
+            return { ...item, confirmed_carrier: null };
           })
         };
-        // クリックポストだけのバッチには確認すべき運送会社が無い（配送方法で固定のため）。
-        // 確認画面を出さずにそのまま確定へ進む。
+        // 確認すべき選択が無いバッチは、確認画面を出さずにそのまま確定へ進む。
         // 以前はここで「宅配便明細がありません」と止めており、**クリックポスト単体の
         // 発送が一切確定できなかった**（2026-08-08 実機で発覚）。
-        if (!parcelItems.length) {
+        //
+        // 【2026-10-20 ネコポス追加】★**個別発送のポストイン行は、確認画面を通す**（要件 R1）。
+        // ネコポスかクリックポストかを人が選ぶため。**通らずに確定すると、選んでいないのに確定する。**
+        // まとめ発送のポストインはまとめられない（サーバーが CLICKPOST_CANNOT_CONSOLIDATE で止める）ので今どおり。
+        const postinItems = consolidation === 'individual' ? shippingItems.filter(item => item.shipping_method === 'clickpost') : [];
+        if (!parcelItems.length && !postinItems.length) {
           pendingCarrierConfirmation = null;
           submitFinalize(state.consolidation, state.destination, {}, state);
           return;
@@ -3319,14 +3390,19 @@
         label.className = 'carrier-confirmation-label';
         label.textContent = labelText;
         const detail = document.createElement('small');
-        detail.textContent = shippingMethod === 'clickpost' ? '配送方法で固定' : `サジェスト: ${carrierLabel_(suggestedCarrier)}`;
+        detail.textContent = shippingMethod === 'clickpost' ? 'ポストイン（ネコポス／クリックポスト）' : `サジェスト: ${carrierLabel_(suggestedCarrier)}`;
         label.appendChild(detail);
         row.appendChild(label);
         if (shippingMethod === 'clickpost') {
-          const fixed = document.createElement('span');
-          fixed.className = 'carrier-fixed';
-          fixed.textContent = 'クリックポスト';
-          row.appendChild(fixed);
+          // 【2026-10-20 ネコポス追加】固定表示をやめ、**ネコポス／クリックポストのプルダウン**にする（要件 R1）。
+          // 空の選択肢は置かない（既定のネコポスが入っている）。サーバーは選択が無ければ止める
+          const select = document.createElement('select');
+          select.className = 'carrier-confirmation-select';
+          select.setAttribute('aria-label', `${labelText}の発送方法`);
+          POSTIN_SELECTABLE_.forEach(code => select.appendChild(new Option(selectionUiLabel_(code), code)));
+          select.value = state.items[itemIndex].confirmed_carrier;
+          select.addEventListener('change', () => { state.items[itemIndex].confirmed_carrier = select.value; });
+          row.appendChild(select);
         } else {
           const select = document.createElement('select');
           select.className = 'carrier-confirmation-select';
@@ -3335,10 +3411,12 @@
           // **選べる範囲は CARRIER_UI_ の selectable が決める。** ここに条件を書き足さない。
           // individual_parcel は個別発送の宅配便行だけ（まとめ発送はトップレベル選択のため対象外）。
           const isIndividualParcelRow = itemIndex !== null && shippingMethod === 'parcel';
-          const carrierOptions = Object.keys(CARRIER_UI_)
-            .filter(code => CARRIER_UI_[code].selectable === 'always'
-              || (CARRIER_UI_[code].selectable === 'individual_parcel' && isIndividualParcelRow))
-            .map(code => [code, CARRIER_UI_[code].label]);
+          //: ネコポスは CARRIER_UI_ の外（SELECTION_EXTRA_UI_）。**同じ selectable の規則で足す**
+          const selectableTable = Object.assign({}, CARRIER_UI_, SELECTION_EXTRA_UI_);
+          const carrierOptions = Object.keys(selectableTable)
+            .filter(code => selectableTable[code].selectable === 'always'
+              || (selectableTable[code].selectable === 'individual_parcel' && isIndividualParcelRow))
+            .map(code => [code, selectableTable[code].label]);
           carrierOptions.forEach(([value, text]) => {
             const option = new Option(text, value);
             select.appendChild(option);
@@ -3362,6 +3440,10 @@
         }
         if (state.consolidation === 'individual' && state.items.some(item => item.shipping_method === 'parcel' && !item.confirmed_carrier)) {
           showToast('宅配便の運送会社を選択してください。', 'error');
+          return;
+        }
+        if (state.consolidation === 'individual' && state.items.some(item => item.shipping_method === 'clickpost' && POSTIN_SELECTABLE_.indexOf(item.confirmed_carrier) === -1)) {
+          showToast('ポストインの発送方法（ネコポス／クリックポスト）を選択してください。', 'error');
           return;
         }
         pendingCarrierConfirmation = null;
@@ -3402,11 +3484,13 @@
           INVALID_CARRIER: '運送会社の指定が不正です',
           CARRIER_NOT_CONFIRMED: '運送会社が未確認です',
           CARRIER_NOT_ALLOWED_FOR_METHOD: '配送方法と運送会社の組み合わせが不正です',
+          POSTIN_CHOICE_REQUIRED: 'ポストインの発送方法（ネコポス／クリックポスト）が未選択です',
           INVALID_CARRIER_SCOPE: '運送会社の指定場所が不正です',
           CARRIER_UNAVAILABLE_FOR_REGION: '地域で取り扱えない運送会社です',
           PREFECTURE_UNKNOWN: '都道府県を判定できません',
           CITY_NOT_MUNICIPALITY: '市区町村の表記が不完全です（例: 木更津 → 木更津市）',
           TEAM_DESTINATION_STALE: '代表送付先が読み込み後に変わっています（更新して選び直す）',
+          TEAM_DESTINATION_MASTER_DUPLICATE: '代表送付先マスタにIDの重複があります（マスタを直す）',
           RATE_SNAPSHOT_UNAVAILABLE: '運賃情報を取得できません'
         };
         return labels[code] || code || '発送確認';
@@ -3822,6 +3906,12 @@
           transport_ms: api.transportOverheadMs, total_ms: render.totalMs,
           timeout_ms: api.timeoutMs, timed_out: api.timedOut === true,
           transport_attempt: api.transportAttempt, trace_rid: item.traceRid || '',
+          // 【2026-08-26 追加】**認証が成立していない回を見分けるため。**
+          // どれも既に測っていたが、送っていなかった。
+          // `final_host` が accounts.google.com なら、返ってきたのはログイン画面である
+          bad_response_kind: api.badResponseKind || '',
+          response_status: Number.isFinite(api.responseStatus) ? api.responseStatus : null,
+          final_host: api.finalHost || '', redirected: api.redirected === true,
           // **7.2秒の中身。** 段階ごとの所要msを別タブへ落とす（→ 06_Diagnostics.gs）
           stages: serverStages_(item.serverMarks)
         };
