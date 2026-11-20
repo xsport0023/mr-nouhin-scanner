@@ -49,7 +49,7 @@
     .hint { position:absolute; bottom:calc(36px + env(safe-area-inset-bottom)); padding:10px 18px; border-radius:999px; background:#0009; color:#fff; font-size:14px; }
     #loading-screen, #error-screen, #forbidden-screen { padding:28px; text-align:center; background:var(--bg); }
     #signin-screen { padding:28px; text-align:center; background:var(--bg); }
-    #mode-screen, #carrier-screen, #completion-mode-screen, #team-destination-screen, #carrier-confirmation-screen, #shipping-issues-screen, #complete-screen, #ship-prep-status-screen, #completion-result-screen { padding:28px; text-align:center; background:var(--bg); }
+    #mode-screen, #carrier-screen, #noqr-screen, #completion-mode-screen, #team-destination-screen, #carrier-confirmation-screen, #shipping-issues-screen, #complete-screen, #ship-prep-status-screen, #completion-result-screen { padding:28px; text-align:center; background:var(--bg); }
     .card { width:min(100%,420px); margin:auto; padding:28px 22px; border:1px solid #2b3248; border-radius:20px; background:var(--surface); }
     h1 { margin:0 0 12px; font-size:22px; } p { margin:8px 0; color:var(--muted); line-height:1.7; white-space:pre-wrap; }
     .spinner { width:42px; height:42px; margin:0 auto 18px; border:4px solid #343b52; border-top-color:var(--mode-color); border-radius:50%; animation:spin .8s linear infinite; }
@@ -136,7 +136,8 @@
     <div class="card"><h1>処理モードを選択</h1><p>実行する作業を選んでください。</p>
       <div class="choice-list">
         <button id="print-mode-button" class="choice-button" type="button">印刷タグ付け</button>
-        <button id="ship-mode-button" class="choice-button ship" type="button">発送準備</button>
+        <button id="ship-mode-button" class="choice-button ship" type="button">発送準備(注文書あり)</button>
+        <button id="noqr-mode-button" class="choice-button ship" type="button">発送準備(注文書なし)</button>
         <button id="completion-mode-button" class="choice-button ship" type="button">納品(お渡し・発送)</button>
       </div>
       <label class="debug-option"><input id="perf-toggle" type="checkbox">速度を計測する</label>
@@ -149,6 +150,33 @@
       <div class="choice-list">
         <button id="sagawa-button" class="choice-button ship" type="button">発送準備を開始</button>
         <button id="carrier-back-button" class="choice-button" type="button">モード選択へ戻る</button>
+      </div>
+    </div>
+  </section>
+  <section id="noqr-screen" class="screen" aria-label="発送準備(注文書なし)">
+    <div class="card"><h1>発送準備(注文書なし)</h1><p id="noqr-message">送付先と送り主をマスタから選び、伝票を1件発行します。</p>
+      <div id="noqr-pending" class="warning-list" hidden><p>発行中の要求ID（控えてください）: <strong id="noqr-request-id"></strong></p><p id="noqr-pending-shipment"></p></div>
+      <div id="noqr-form" class="address-form">
+        <label>送付先を検索<input id="noqr-dest-search" type="search" autocomplete="off"></label>
+        <label>送付先（代表送付先マスタ）<select id="noqr-dest-select"><option value="">選択してください</option></select></label>
+        <p id="noqr-sender-warning" class="warning-list" hidden></p>
+        <label>送り主を検索<input id="noqr-sender-search" type="search" autocomplete="off"></label>
+        <label>送り主<select id="noqr-sender-select"><option value="">選択してください</option></select></label>
+        <label id="noqr-store-wrap" hidden>ストア（契約）<select id="noqr-store-select"><option value="">選択してください</option></select></label>
+        <label>運送会社<select id="noqr-carrier-select"><option value="">選択してください</option></select></label>
+        <p id="noqr-clickpost-notice" class="warning-list" hidden>クリックポストの伝票の差出人は、クリックポストのアカウントの登録になります（選んだ送り主は印字されません。ログには残ります）。</p>
+        <label>品名<input id="noqr-item" autocomplete="off"></label>
+      </div>
+      <div id="noqr-result" class="warning-list" hidden></div>
+      <div class="address-actions">
+        <button id="noqr-back" class="choice-button" type="button">モード選択へ戻る</button>
+        <button id="noqr-refresh" class="choice-button" type="button">マスタを読み込み直す</button>
+        <button id="noqr-issue-button" class="choice-button ship" type="button">伝票を発行</button>
+        <button id="noqr-status-button" class="choice-button" type="button" hidden>結果を照会する（読み取り専用）</button>
+        <button id="noqr-resend-button" class="choice-button ship" type="button" hidden>同じ要求IDで送り直す</button>
+        <button id="noqr-cancel-button" class="choice-button" type="button" hidden>この発行を取り消す</button>
+        <button id="noqr-handoff-button" class="choice-button" type="button" hidden>担当へ引き継いだ</button>
+        <button id="noqr-new-button" class="choice-button ship" type="button" hidden>次の発行を始める</button>
       </div>
     </div>
   </section>
@@ -3736,9 +3764,494 @@
 
       function finalizeShipping() { showConsolidationScreen(); }
 
+      // ========== 発送準備(注文書なし)（2026-11-19。要件 Q1〜Q5・Q9・Q16 ／ 契約 GO-1〜GO-5・GO-8・GO-16） ==========
+      //
+      // 【端末の記録】発行の要求は、送る前に端末（localStorage）へ保存して読み戻せたときだけ送る。
+      // 応答が来ない・再読込したときは、**新しい要求として出し直さず、同じ要求IDで照会する。**
+      // 記録を消すのは、照会で「済」「取消」を確かめたとき、または利用者が「担当へ引き継いだ」を押したときだけ。
+      const NOQR_PENDING_STORAGE_KEY = 'mrNouhinNoqrPending';
+      // 検索の対象列（決定レジスタ 14）
+      const NOQR_DEST_SEARCH_KEYS = ['master_id', 'team_name', 'name', 'company', 'prefecture', 'city'];
+      const NOQR_SENDER_SEARCH_KEYS = ['master_id', 'team_name', 'sender_name', 'company', 'prefecture', 'city'];
+      const NOQR_DEST_FIELDS = ['team_name', 'name', 'company', 'postal_code', 'prefecture', 'city', 'address1', 'address2', 'phone', 'default_sender'];
+      const NOQR_SENDER_FIELDS = ['sender_name', 'company', 'postal_code', 'prefecture', 'city', 'address1', 'address2', 'phone'];
+      let noqrContext = null;
+      let noqrPending = null;
+      let noqrInFlight = false;
+      // 画面に「要確認」と引継ぎのボタンを出している要求ID。**引継ぎはこの要求ID にだけ効く**（実装レビュー第3巡 指摘1）
+      let noqrNeedsCheckShownFor = null;
+
+      // 【タブをまたぐ】（実装レビュー第1巡 指摘2）端末の記録は同じブラウザの全タブで1つ。
+      // **新しい発行の直前に毎回読み直し**、先に記録があればその要求IDで照会する。
+      // 記録を書き換える・消すのは、**記録の要求IDが自分の要求IDと同じときだけ**。
+      // **読めないことを「記録なし」と扱わない**（読めなければ発行を始めない）。
+      function noqrReadPending_() {
+        try {
+          const raw = localStorage.getItem(NOQR_PENDING_STORAGE_KEY);
+          return { ok: true, record: raw ? JSON.parse(raw) : null };
+        } catch (error) { return { ok: false, record: null }; }
+      }
+
+      /**
+       * 端末の記録をタブ間で排他して触る（実装レビュー第2巡 指摘1）。**Web Locks の中で、記録の確かめから
+       * 確保・書換え・削除までを行う。** 通信はこの外で行う。Web Locks が無いブラウザでは null を返し、
+       * 呼ぶ側は発行を始めない（読み直してから書くまでの間に別のタブが書くのを防げないため）。
+       */
+      function noqrWithLock_(fn) {
+        const locks = (typeof navigator !== 'undefined' && navigator && navigator.locks) ? navigator.locks : null;
+        if (!locks || typeof locks.request !== 'function') return null;
+        return locks.request(NOQR_PENDING_STORAGE_KEY, () => fn());
+      }
+
+      /**
+       * 新しい発行の要求ID を確保する。**先に記録があればそれを返し、新しい要求は作らない。**
+       * @return {Promise<{state: string, record?: Object}>} claimed / adopt / unreadable / unsavable / nolock
+       */
+      function noqrClaim_(payload) {
+        const run = noqrWithLock_(() => {
+          const stored = noqrReadPending_();
+          if (!stored.ok) return { state: 'unreadable' };
+          if (stored.record) return { state: 'adopt', record: stored.record };
+          const record = { request_id: createRequestId('noqr'), payload, shipment_id: '' };
+          if (!noqrSavePending_(record)) return { state: 'unsavable' };
+          return { state: 'claimed', record };
+        });
+        return run ? run : Promise.resolve({ state: 'nolock' });
+      }
+
+      /** 記録の要求IDが同じときだけ書き直す（発送ID を足すなど）。 */
+      async function noqrUpdatePending_(record) {
+        const run = noqrWithLock_(() => {
+          const stored = noqrReadPending_();
+          if (!stored.ok || !stored.record || stored.record.request_id !== record.request_id) return false;
+          return noqrSavePending_(record);
+        });
+        return run ? run : false;
+      }
+
+      /** 保存して読み戻す。**読み戻した中身が同じときだけ true。** */
+      function noqrSavePending_(record) {
+        try {
+          const text = JSON.stringify(record);
+          localStorage.setItem(NOQR_PENDING_STORAGE_KEY, text);
+          return localStorage.getItem(NOQR_PENDING_STORAGE_KEY) === text;
+        } catch (error) { return false; }
+      }
+
+      /**
+       * この要求ID の記録だけを消す。**別のタブが保存した、別の要求IDの記録は消さない。**
+       * ロックの中で消し、**読み直して**「この要求ID の記録がもう無い」ことと「いま端末に在る記録」を確かめる。
+       * この画面の記録は、読み直した端末の記録に合わせる（別のタブの記録が在ればそれを出し、照会できるようにする）。
+       * @return {Promise<boolean>} この要求ID の記録が消え、端末にほかの記録も無いときだけ true
+       *   （実装レビュー第4巡 指摘1。呼ぶ側は true のときだけ「済」「取消」「引き継ぎました」を出す）
+       */
+      async function noqrClearPending_(requestId) {
+        const run = noqrWithLock_(() => {
+          const stored = noqrReadPending_();
+          if (!stored.ok) return { cleared: false, current: null, readable: false };
+          if (stored.record && stored.record.request_id === requestId) {
+            try { localStorage.removeItem(NOQR_PENDING_STORAGE_KEY); } catch (error) { /* 下の読み直しで「消えていない」と分かる */ }
+          }
+          const after = noqrReadPending_();
+          if (!after.ok) return { cleared: false, current: null, readable: false };
+          if (after.record && after.record.request_id === requestId) return { cleared: false, current: after.record, readable: true };
+          return { cleared: true, current: after.record || null, readable: true };
+        });
+        const result = run ? await run : { cleared: false, current: noqrPending, readable: true };
+        if (result.readable) noqrPending = result.current;
+        noqrRenderPending_();
+        return result.cleared && !result.current;
+      }
+
+      /** 解除できなかったとき（記録を消せない・別のタブの記録が在る・読めない）の表示。照会の操作を残す。 */
+      function noqrShowNotCleared_() {
+        noqrMessage_(noqrPending
+          ? `端末に未確定の発行の記録があります（要求ID: ${noqrPending.request_id}）。結果を照会してください。`
+          : '端末の記録を確かめられませんでした。画面を開き直してください。');
+        if (!noqrPending) noqrShowButtons_([]);
+      }
+
+      /** 別のタブの記録を引き継いで照会する（新しい要求は作らない）。 */
+      async function noqrAdoptPending_(record) {
+        noqrPending = record;
+        noqrRenderPending_();
+        noqrMessage_('未確定の発行があります（別の画面で始めたものを含む）。同じ要求IDで結果を照会します。');
+        await noqrCheckStatus_();
+      }
+
+      function noqrShowButtons_(visible) {
+        ['noqr-issue-button', 'noqr-status-button', 'noqr-resend-button', 'noqr-cancel-button', 'noqr-handoff-button', 'noqr-new-button']
+          .forEach(id => { document.getElementById(id).hidden = !visible.includes(id); });
+      }
+
+      /** 発行中の要求ID を画面の上に出し続ける（端末の記録を失っても、担当がログで探せるように）。 */
+      function noqrRenderPending_(state) {
+        if (state !== '要確認') noqrNeedsCheckShownFor = null;
+        const box = document.getElementById('noqr-pending');
+        if (!noqrPending) {
+          box.hidden = true;
+          noqrShowButtons_(['noqr-issue-button']);
+          return;
+        }
+        box.hidden = false;
+        document.getElementById('noqr-request-id').textContent = noqrPending.request_id;
+        document.getElementById('noqr-pending-shipment').textContent = noqrPending.shipment_id ? '発送ID: ' + noqrPending.shipment_id : '';
+        if (state === '要確認') noqrShowButtons_(['noqr-status-button', 'noqr-handoff-button']);
+        else if (state === 'resendable') noqrShowButtons_(['noqr-status-button', 'noqr-resend-button', 'noqr-cancel-button']);
+        else noqrShowButtons_(['noqr-status-button', 'noqr-cancel-button']);
+      }
+
+      function noqrMessage_(text) {
+        document.getElementById('noqr-message').textContent = text;
+      }
+
+      function noqrMatches_(row, keys, query) {
+        const q = String(query || '').trim();
+        if (!q) return true;
+        return keys.some(key => String(row[key] || '').includes(q));
+      }
+
+      function noqrFillSelect_(select, options, keepValue) {
+        const previous = select.value;
+        select.textContent = '';
+        select.appendChild(new Option('選択してください', ''));
+        options.forEach(option => select.appendChild(new Option(option.text, option.value)));
+        select.value = keepValue && options.some(option => option.value === previous) ? previous : '';
+      }
+
+      function noqrRenderDestinations_() {
+        const query = document.getElementById('noqr-dest-search').value;
+        const rows = (noqrContext ? noqrContext.destinations : []).filter(row => noqrMatches_(row, NOQR_DEST_SEARCH_KEYS, query));
+        noqrFillSelect_(document.getElementById('noqr-dest-select'),
+          rows.map(row => ({ value: row.master_id, text: `${row.master_id} ${row.team_name} / ${row.name}（${row.prefecture}${row.city}）` })), true);
+      }
+
+      function noqrRenderSenders_() {
+        const query = document.getElementById('noqr-sender-search').value;
+        const stores = (noqrContext ? noqrContext.stores : [])
+          .filter(store => noqrMatches_({ master_id: store.handle, sender_name: store.ship_from_name, company: store.label }, NOQR_SENDER_SEARCH_KEYS, query))
+          .map(store => ({ value: 'store:' + store.handle, text: `本社名義（${store.ship_from_name}・${store.label}）` }));
+        const senders = (noqrContext ? noqrContext.senders : [])
+          .filter(row => noqrMatches_(row, NOQR_SENDER_SEARCH_KEYS, query))
+          .map(row => ({ value: 'master:' + row.master_id, text: `${row.master_id} ${row.sender_name}（${row.prefecture}${row.city}）` }));
+        noqrFillSelect_(document.getElementById('noqr-sender-select'), stores.concat(senders), true);
+      }
+
+      function noqrFindDestination_(id) {
+        return noqrContext ? noqrContext.destinations.find(row => row.master_id === id) || null : null;
+      }
+
+      function noqrFindSender_(id) {
+        return noqrContext ? noqrContext.senders.find(row => row.master_id === id) || null : null;
+      }
+
+      /** 送り主を変えたとき。**送付主へ変えたら、ストアの選択を空に戻す**（前の名義から引き継がない。Q9）。 */
+      function noqrApplySender_() {
+        const value = document.getElementById('noqr-sender-select').value;
+        const master = value.startsWith('master:');
+        document.getElementById('noqr-store-wrap').hidden = !master;
+        document.getElementById('noqr-store-select').value = '';
+      }
+
+      function noqrApplyCarrier_() {
+        document.getElementById('noqr-clickpost-notice').hidden = document.getElementById('noqr-carrier-select').value !== 'clickpost';
+      }
+
+      /** 送付先を選んだとき: 差出人の初期値（Q3）・品名の初期値（Q4）・運送会社のサジェスト（Q5）。 */
+      function noqrApplyDestination_() {
+        const destination = noqrFindDestination_(document.getElementById('noqr-dest-select').value);
+        const warning = document.getElementById('noqr-sender-warning');
+        if (!destination) {
+          warning.hidden = true;
+          return;
+        }
+        const choice = destination.default_sender_choice;
+        if (choice) {
+          document.getElementById('noqr-sender-search').value = '';
+          noqrRenderSenders_();
+          document.getElementById('noqr-sender-select').value = choice.kind + ':' + choice.id;
+        } else {
+          document.getElementById('noqr-sender-select').value = '';
+        }
+        noqrApplySender_();
+        warning.hidden = !destination.default_sender_warning;
+        warning.textContent = destination.default_sender_warning ? destination.default_sender_warning + '。送り主を選んでください。' : '';
+        document.getElementById('noqr-item').value = `衣類(${destination.team_name})`;
+        // **サジェストが出ないときは空**（人が選ぶまで発行できない）
+        document.getElementById('noqr-carrier-select').value = destination.suggested_carrier || '';
+        noqrApplyCarrier_();
+      }
+
+      function noqrResetForm_() {
+        ['noqr-dest-search', 'noqr-sender-search', 'noqr-item'].forEach(id => { document.getElementById(id).value = ''; });
+        noqrRenderDestinations_();
+        noqrRenderSenders_();
+        ['noqr-dest-select', 'noqr-sender-select', 'noqr-store-select', 'noqr-carrier-select'].forEach(id => { document.getElementById(id).value = ''; });
+        document.getElementById('noqr-store-wrap').hidden = true;
+        document.getElementById('noqr-sender-warning').hidden = true;
+        document.getElementById('noqr-result').hidden = true;
+        noqrApplyCarrier_();
+      }
+
+      function noqrPopulate_(data) {
+        noqrContext = data;
+        const store = document.getElementById('noqr-store-select');
+        store.textContent = '';
+        store.appendChild(new Option('選択してください', ''));
+        (data.stores || []).forEach(s => store.appendChild(new Option(`${s.label}（${s.ship_from_name}）`, s.handle)));
+        const carrier = document.getElementById('noqr-carrier-select');
+        carrier.textContent = '';
+        carrier.appendChild(new Option('選択してください', ''));
+        (data.carriers || []).forEach(c => carrier.appendChild(new Option(c.label, c.value)));
+        noqrRenderDestinations_();
+        noqrRenderSenders_();
+      }
+
+      async function noqrPost_(action, body) {
+        const request = buildApiRequest_(Object.assign({ action, id_token: idToken }, body));
+        const result = await fetchJsonWithPerformance(action, request.body, null, request.options);
+        finishRequestPerformance(result.measurement, result.data && result.data.ok ? 'success' : 'api_error');
+        return result.data || {};
+      }
+
+      async function noqrLoadContext_() {
+        try {
+          const data = await noqrPost_('noqr_context', {});
+          if (handleAuthError(data)) return;
+          if (!data.ok) { showToast(data.error || 'マスタを読めませんでした。', 'error'); return; }
+          noqrPopulate_(data);
+        } catch (error) {
+          showToast(requestFailureMessage_(error, 'マスタを読めませんでした。もう一度読み込み直してください。'), 'error');
+        }
+      }
+
+      async function startNoqrMode() {
+        stopCamera();
+        currentMode = 'noqr';
+        showScreen('noqr-screen');
+        const stored = noqrReadPending_();
+        noqrPending = stored.record;
+        noqrRenderPending_();
+        await noqrLoadContext_();
+        if (!stored.ok) {
+          noqrMessage_('端末の記録を読めないため、発行を始めません。画面を開き直してください。');
+          noqrShowButtons_([]);
+          return;
+        }
+        if (noqrPending) {
+          noqrMessage_('未確定の発行があります。同じ要求IDで結果を照会します（新しい発行はしません）。');
+          await noqrCheckStatus_();
+        } else {
+          noqrResetForm_();
+        }
+      }
+
+      /** 画面の選択から要求を組み立てる。**足りなければ理由を返す。** */
+      function noqrBuildPayload_() {
+        const destination = noqrFindDestination_(document.getElementById('noqr-dest-select').value);
+        if (!destination) return { error: '送付先を選んでください。' };
+        const senderValue = document.getElementById('noqr-sender-select').value;
+        if (!senderValue) return { error: '送り主を選んでください。' };
+        const carrier = document.getElementById('noqr-carrier-select').value;
+        if (!carrier) return { error: '運送会社を選んでください。' };
+        if (/^'/.test(document.getElementById('noqr-item').value.trim())) return { error: "品名の先頭に ' は使えません。" };
+        const kind = senderValue.split(':')[0];
+        const id = senderValue.slice(kind.length + 1);
+        const text = value => String(value === undefined || value === null ? '' : value);
+        const payload = {
+          destination_master_id: destination.master_id,
+          destination_snapshot: Object.fromEntries(NOQR_DEST_FIELDS.map(key => [key, text(destination[key])])),
+          sender: { kind, id },
+          carrier,
+          item_label: document.getElementById('noqr-item').value
+        };
+        if (kind === 'master') {
+          const sender = noqrFindSender_(id);
+          if (!sender) return { error: '送り主を選び直してください。' };
+          const store = document.getElementById('noqr-store-select').value;
+          if (!store) return { error: 'ストア（契約）を選んでください。' };
+          payload.sender_snapshot = Object.fromEntries(NOQR_SENDER_FIELDS.map(key => [key, text(sender[key])]));
+          payload.store = store;
+        }
+        return { payload };
+      }
+
+      async function noqrIssue_() {
+        if (noqrInFlight) return;
+        if (noqrPending) { showToast('未確定の発行があります。先に結果を照会してください。', 'warning'); return; }
+        const built = noqrBuildPayload_();
+        if (built.error) { showToast(built.error, 'error'); return; }
+        // **タブ間で排他して、記録の確かめから確保までを行う**（別のタブが先に始めた発行を上書きしない）。
+        // 最初に送る前に、端末に保存して読み戻せることを確かめる。できなければ送らない（Q16）
+        const claim = await noqrClaim_(built.payload);
+        if (claim.state === 'adopt') { await noqrAdoptPending_(claim.record); return; }
+        if (claim.state !== 'claimed') {
+          showToast(claim.state === 'nolock' ? 'このブラウザでは発行の記録をタブ間で守れないため、送りませんでした。'
+            : claim.state === 'unreadable' ? '端末の記録を読めないため、送りませんでした。'
+            : '端末に発行の記録を保存できないため、送りませんでした。', 'error');
+          return;
+        }
+        noqrPending = claim.record;
+        noqrRenderPending_();
+        await noqrSend_();
+      }
+
+      /** 応答を待つ間に、この画面の記録が別の要求ID に替わっていないか（実装レビュー第2巡 指摘1）。 */
+      function noqrStillMine_(requestId) {
+        return !!(noqrPending && noqrPending.request_id === requestId);
+      }
+
+      async function noqrSend_() {
+        if (!noqrPending || noqrInFlight) return;
+        noqrInFlight = true;
+        const requestId = noqrPending.request_id;
+        noqrMessage_('伝票を発行しています…');
+        try {
+          const data = await noqrPost_('noqr_issue', Object.assign({ request_id: requestId }, noqrPending.payload));
+          if (handleAuthError(data)) return;
+          await noqrHandleOutcome_(data, requestId);
+        } catch (error) {
+          // **応答が来ない＝発行されたか分からない。** 新しい発行は始めず、照会させる
+          if (noqrStillMine_(requestId)) {
+            noqrMessage_('発行の結果を確かめられませんでした。「結果を照会する」を押してください（もう一度発行しないでください）。');
+            noqrRenderPending_();
+          }
+        } finally {
+          noqrInFlight = false;
+        }
+      }
+
+      /**
+       * 発行・照会・取消の応答を画面へ。**端末の記録を消すのは 済・取消 だけ。**
+       * **呼び出しを始めたときの要求ID（requestId）と、いまの記録が違えば何もしない**——古い応答で、
+       * 別のタブが始めた発行の記録と画面を消さない。
+       */
+      async function noqrHandleOutcome_(data, requestId) {
+        if (!noqrStillMine_(requestId)) return;
+        const state = data.ok ? data.state : (data.error_code === 'GO_NEEDS_CHECK' ? '要確認'
+          : data.error_code === 'GO_CANCELLED' ? '取消' : '');
+        if (data.shipment_id) {
+          noqrPending.shipment_id = data.shipment_id;
+          await noqrUpdatePending_(noqrPending);
+          // **ロックを待つ間に、別のタブの記録へ替わっていないかを照らし直す**
+          if (!noqrStillMine_(requestId)) return;
+        }
+        if (state === '済') {
+          const result = document.getElementById('noqr-result');
+          result.hidden = false;
+          result.textContent = `発行しました。発送ID: ${data.shipment_id} ／ CSV: ${data.csv_path}`;
+          if (!(await noqrClearPending_(requestId))) { result.hidden = true; noqrShowNotCleared_(); return; }
+          noqrMessage_('発行しました。');
+          noqrShowButtons_(['noqr-new-button']);
+          return;
+        }
+        if (state === '取消') {
+          if (!(await noqrClearPending_(requestId))) { noqrShowNotCleared_(); return; }
+          noqrMessage_('この発行は取消済みです。次の発行を始められます。');
+          noqrShowButtons_(['noqr-new-button']);
+          return;
+        }
+        if (state === '要確認') {
+          noqrMessage_(`人の確認が要ります。この発行は終わっていません。担当者に要求ID（${requestId}）と発送ID（${data.shipment_id || 'なし'}）を伝え、伝えたことを確かめてから「担当へ引き継いだ」を押してください。押すと次の発行を始められますが、同じ荷物を出し直してよいかは担当が決めます。`);
+          noqrRenderPending_('要確認');
+          noqrNeedsCheckShownFor = requestId;
+          return;
+        }
+        if (data.error_code === 'GO_WRITE_STOPPED') {
+          noqrMessage_('受付が止まっています。端末の記録は残しています。あとで照会してください。');
+          noqrRenderPending_();
+          return;
+        }
+        if (data.ok && (data.state === '準備済' || data.state === '上げ中' || data.state === 'none')) {
+          noqrMessage_(data.state === 'none'
+            ? 'サーバーにこの要求の記録はまだありません。同じ要求IDで送り直せます（新しい発行にはなりません）。'
+            : `この発行は「${data.state}」です。同じ要求IDで送り直せます。`);
+          noqrRenderPending_('resendable');
+          return;
+        }
+        noqrMessage_((data.error || '発行できませんでした。結果を照会してください。') + (data.detail ? '（' + data.detail + '）' : ''));
+        noqrRenderPending_();
+      }
+
+      async function noqrCheckStatus_() {
+        if (!noqrPending || noqrInFlight) return;
+        noqrInFlight = true;
+        const requestId = noqrPending.request_id;
+        try {
+          const data = await noqrPost_('noqr_status', { request_id: requestId });
+          if (handleAuthError(data)) return;
+          await noqrHandleOutcome_(data, requestId);
+        } catch (error) {
+          // **照会そのものの失敗では何も決めない。** 新しい発行も始めない
+          if (noqrStillMine_(requestId)) {
+            noqrMessage_('照会できませんでした。もう一度「結果を照会する」を押してください。');
+            noqrRenderPending_();
+          }
+        } finally {
+          noqrInFlight = false;
+        }
+      }
+
+      async function noqrCancel_() {
+        if (!noqrPending || noqrInFlight) return;
+        noqrInFlight = true;
+        const requestId = noqrPending.request_id;
+        try {
+          const data = await noqrPost_('noqr_cancel', { request_id: requestId });
+          if (handleAuthError(data)) return;
+          if (data.ok && data.state === '取消') await noqrHandleOutcome_(data, requestId);
+          else if (noqrStillMine_(requestId)) { noqrMessage_(data.error || '取り消せませんでした。照会してください。'); noqrRenderPending_(); }
+        } catch (error) {
+          if (noqrStillMine_(requestId)) {
+            noqrMessage_('取消の結果を確かめられませんでした。照会してください。');
+            noqrRenderPending_();
+          }
+        } finally {
+          noqrInFlight = false;
+        }
+      }
+
+      async function noqrHandoff_() {
+        // **画面に「要確認」を出した要求ID と、いまの記録が同じときだけ**（別の要求の記録を消さない）
+        if (!noqrPending || !noqrNeedsCheckShownFor || noqrPending.request_id !== noqrNeedsCheckShownFor) return;
+        // **解除できたときだけ「引き継ぎました」**（実装レビュー第4巡 指摘1）
+        if (!(await noqrClearPending_(noqrNeedsCheckShownFor))) { noqrShowNotCleared_(); return; }
+        noqrMessage_('担当へ引き継ぎました。次の発行を始められます（同じ荷物を出し直してよいかは担当が決めます）。');
+        noqrShowButtons_(['noqr-new-button']);
+      }
+
+      function noqrNew_() {
+        if (noqrPending) return;
+        noqrResetForm_();
+        noqrMessage_('送付先と送り主をマスタから選び、伝票を1件発行します。');
+        noqrShowButtons_(['noqr-issue-button']);
+      }
+
       document.getElementById('print-mode-button').addEventListener('click', startPrintMode);
       homeButton.addEventListener('click', returnHome_);
       document.getElementById('ship-mode-button').addEventListener('click', showCarrierSelect);
+      document.getElementById('noqr-mode-button').addEventListener('click', startNoqrMode);
+      document.getElementById('noqr-back').addEventListener('click', showModeSelect);
+      document.getElementById('noqr-refresh').addEventListener('click', noqrLoadContext_);
+      document.getElementById('noqr-dest-search').addEventListener('input', noqrRenderDestinations_);
+      document.getElementById('noqr-sender-search').addEventListener('input', noqrRenderSenders_);
+      document.getElementById('noqr-dest-select').addEventListener('change', noqrApplyDestination_);
+      document.getElementById('noqr-sender-select').addEventListener('change', noqrApplySender_);
+      document.getElementById('noqr-carrier-select').addEventListener('change', noqrApplyCarrier_);
+      document.getElementById('noqr-issue-button').addEventListener('click', noqrIssue_);
+      document.getElementById('noqr-status-button').addEventListener('click', noqrCheckStatus_);
+      document.getElementById('noqr-resend-button').addEventListener('click', noqrSend_);
+      document.getElementById('noqr-cancel-button').addEventListener('click', noqrCancel_);
+      document.getElementById('noqr-handoff-button').addEventListener('click', noqrHandoff_);
+      document.getElementById('noqr-new-button').addEventListener('click', noqrNew_);
+      // 実機のブラウザには必ず在る。**無い環境（試験の仕掛け）では登録しない**
+      if (typeof window.addEventListener === 'function') window.addEventListener('storage', event => {
+        if (event.key !== NOQR_PENDING_STORAGE_KEY || currentMode !== 'noqr') return;
+        const stored = noqrReadPending_();
+        if (!stored.ok) return;
+        noqrPending = stored.record;
+        noqrRenderPending_();
+      });
       document.getElementById('completion-mode-button').addEventListener('click', showCompletionModeSelect);
       document.getElementById('completion-individual-button').addEventListener('click', () => startCompletionMode('individual'));
       document.getElementById('completion-single-parcel-button').addEventListener('click', () => startCompletionMode('single_parcel'));
