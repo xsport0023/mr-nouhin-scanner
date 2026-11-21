@@ -2768,6 +2768,9 @@
           if (!data.ok) {
             renderCompletionExecutionResult_({
               complete: false,
+              // D12（2026-11-21）: サーバーがロックを取れず、この要求では何もしていない。
+              // **要確認（再実行不可）にしない。自動で照会・再送もしない**（人が「結果を確認する」を押す）
+              inProgress: data.error_code === 'EXECUTE_IN_PROGRESS',
               error: data.error || '発送確定を実行できませんでした。'
             });
             finishRequestPerformance(measurement, 'api_error');
@@ -2816,10 +2819,18 @@
         }
 
         cancelButton.hidden = false;
-        confirm.textContent = '要確認（再実行不可）';
         // 外部更新を再送するボタンではない。保存済みの状態を読むだけで、
         // 通信失敗時も何度でも確認できる。
         statusButton.hidden = !completionPlanId;
+        if (result.inProgress === true) {
+          // D12: ほかの確定がサーバーのロックを持っていた。**この要求では外部へ何も送っていない。**
+          // 復帰の記録は消さない（今どおり）。確定のボタンは押せないまま、照会だけを案内する
+          confirm.textContent = '処理中（結果を確認してください）';
+          notice.textContent = '処理中です。この要求では何も処理していません。少し待ってから「結果を確認する」を押してください。';
+          showToast('処理中です。少し待ってから結果を確認してください。', 'warning');
+          return;
+        }
+        confirm.textContent = '要確認（再実行不可）';
         if (result.outcomeUnknown === true) {
           notice.textContent = '発送確定が完了したか確認できていません。外部処理は再実行せず、「結果を確認する（読み取り専用）」を押してください。';
           showToast('発送確定が完了したか確認できていません。結果を確認してください。', 'warning');
