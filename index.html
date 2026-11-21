@@ -25,14 +25,20 @@
     .screen { position:fixed; inset:0; display:none; flex-direction:column; align-items:center; overflow-y:auto; -webkit-overflow-scrolling:touch; }
     .screen.active { display:flex; }
     .screen.screen-transition-locked { pointer-events:none; }
-    #home-button { position:fixed; z-index:30; top:calc(10px + env(safe-area-inset-top)); right:10px; width:auto; margin:0; padding:9px 12px; border:1px solid #7180a5; border-radius:10px; background:#171b28ee; color:#fff; font-size:13px; }
+    /* 処理モード選択へ戻るボタンは各画面の中に置く（判断113〜120。要件 B1・B3）。
+       画面の外に浮かせた共通のボタンは、iPhone のホーム画面アイコン起動で描かれなかった（調査 survey-mobile-back-20261120.md 4-4）。 */
+    .card > .mode-return-button { margin-top:12px; }
     #camera-screen { background:#000; overflow:hidden; }
     #video { width:100%; height:100%; object-fit:cover; }
     .camera-overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; pointer-events:none; }
-    .topbar { width:100%; padding:calc(18px + env(safe-area-inset-top)) 20px 18px; background:linear-gradient(#090b12ee,transparent); display:flex; align-items:center; gap:10px; }
+    .topbar { width:100%; padding:calc(18px + env(safe-area-inset-top)) 20px 18px; background:linear-gradient(#090b12ee,transparent); display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+    /* カメラの重ね表示はタップを通さない（pointer-events:none）。戻るボタンだけ受ける（要件 B6・BK-5） */
+    .topbar .mode-return-button { flex:0 0 auto; width:auto; margin:0 0 0 auto; padding:8px 10px; font-size:12px; pointer-events:auto; }
+    /* 画面の切替の直後（操作ロック中）は、このボタンもタップを受けない（前の画面の押し込みが残らないように。実装レビュー第1巡の BK-5 の確認で、ロック中も受けていたのを直した） */
+    .screen.screen-transition-locked .topbar .mode-return-button { pointer-events:none; }
     .mode-dot { width:10px; height:10px; border-radius:50%; background:var(--mode-color); box-shadow:0 0 12px var(--mode-color); }
     .title { font-size:18px; font-weight:800; letter-spacing:.04em; }
-    .subtitle { margin-left:auto; color:#d5d9e8; font-size:12px; }
+    .subtitle { flex-basis:100%; order:3; color:#d5d9e8; font-size:12px; }
     .scan-frame { position:absolute; top:50%; left:50%; width:min(72vw,300px); aspect-ratio:1; transform:translate(-50%,-50%); }
     .scan-frame.band { width:min(82vw,390px); aspect-ratio:3.5; }
     .scan-frame::before, .scan-frame::after, .corner { content:""; position:absolute; width:42px; height:42px; border:4px solid #fff; }
@@ -196,7 +202,7 @@
   <section id="camera-screen" class="screen" aria-label="印刷モード">
     <video id="video" autoplay playsinline muted></video>
     <div class="camera-overlay">
-      <div class="topbar"><span class="mode-dot"></span><span id="camera-title" class="title">印刷モード</span><span id="camera-subtitle" class="subtitle">QRをかざしてください</span></div>
+      <div class="topbar"><span class="mode-dot"></span><span id="camera-title" class="title">印刷モード</span><span id="camera-subtitle" class="subtitle">QRをかざしてください</span><button id="camera-mode-return" class="choice-button mode-return-button" type="button">モード選択へ戻る</button></div>
       <div id="scan-frame" class="scan-frame"><span class="corner br"></span><span class="corner bl"></span><span class="scan-line"></span><span id="scan-feedback" class="scan-feedback" role="status" aria-live="polite">QR読取済み・照会中…</span></div>
       <div id="camera-hint" class="hint">スキャンすると自動で印刷タグを付けます</div>
       <aside id="perf-panel" aria-label="速度計測結果" hidden><strong>速度計測（端末内のみ）</strong><pre id="perf-output">計測待機中</pre></aside>
@@ -221,8 +227,8 @@
       </div>
     </div>
   </section>
-  <section id="loading-screen" class="screen"><div class="card"><div class="spinner"></div><p id="loading-message">カメラを準備しています…</p></div></section>
-  <section id="error-screen" class="screen"><div class="card"><h1>処理できませんでした</h1><p id="error-message"></p><button id="retry-button" type="button">カメラに戻る</button></div></section>
+  <section id="loading-screen" class="screen"><div class="card"><div class="spinner"></div><p id="loading-message">カメラを準備しています…</p><button id="loading-mode-return" class="choice-button mode-return-button" type="button">モード選択へ戻る</button></div></section>
+  <section id="error-screen" class="screen"><div class="card"><h1>処理できませんでした</h1><p id="error-message"></p><button id="retry-button" type="button">カメラに戻る</button><button id="error-mode-return" class="choice-button mode-return-button" type="button">モード選択へ戻る</button></div></section>
   <section id="forbidden-screen" class="screen"><div class="card"><h1>アクセスできません</h1><p id="forbidden-message">許可されたGoogleアカウントでサインインしてください。</p><button id="forbidden-button" type="button">サインイン画面へ戻る</button></div></section>
   <section id="team-destination-screen" class="screen" aria-label="発送単位と送付先選択">
     <div class="card"><h1>発送方法と送付先</h1><p id="team-order-message"></p>
@@ -245,23 +251,23 @@
           <button id="team-manual-close" class="choice-button" type="button">手入力をやめる</button>
         </div>
       </div>
-      <div class="choice-list"><button id="team-address-cancel" class="choice-button" type="button">戻る</button></div>
+      <div class="choice-list"><button id="team-address-cancel" class="choice-button" type="button">戻る</button><button id="team-mode-return" class="choice-button mode-return-button" type="button">モード選択へ戻る</button></div>
     </div>
   </section>
   <section id="carrier-confirmation-screen" class="screen" aria-label="運送会社確認">
     <div class="card"><h1>運送会社の確認</h1><p id="carrier-confirmation-message">サジェスト内容を確認してください。変更する明細だけ選び直せます。</p>
       <div id="carrier-confirmation-list" class="carrier-confirmation-list"></div>
-      <div class="address-actions"><button id="carrier-confirmation-back" class="choice-button" type="button">戻る</button><button id="carrier-confirmation-submit" class="choice-button ship" type="button">この内容で確定</button></div>
+      <div class="address-actions"><button id="carrier-confirmation-back" class="choice-button" type="button">戻る</button><button id="carrier-confirmation-submit" class="choice-button ship" type="button">この内容で確定</button></div><button id="carrier-confirmation-mode-return" class="choice-button mode-return-button" type="button">モード選択へ戻る</button>
     </div>
   </section>
   <section id="shipping-issues-screen" class="screen" aria-label="発送確認">
-    <div class="card"><h1>発送前の確認</h1><p id="shipping-issues-message"></p><div id="shipping-issues-list" class="warning-list"></div><div class="address-actions"><button id="shipping-issues-back" class="choice-button" type="button">戻る</button><button id="shipping-issues-confirm" class="choice-button ship" type="button">確認して続行</button></div></div>
+    <div class="card"><h1>発送前の確認</h1><p id="shipping-issues-message"></p><div id="shipping-issues-list" class="warning-list"></div><div class="address-actions"><button id="shipping-issues-back" class="choice-button" type="button">戻る</button><button id="shipping-issues-confirm" class="choice-button ship" type="button">確認して続行</button></div><button id="shipping-issues-mode-return" class="choice-button mode-return-button" type="button">モード選択へ戻る</button></div>
   </section>
   <section id="complete-screen" class="screen" aria-label="発送準備完了">
-    <div class="card"><h1>発送準備完了</h1><p id="complete-message"></p><div id="shipping-artifact-breakdown" class="artifact-breakdown"></div><div id="shipping-warnings" class="warning-list"></div><button id="complete-next-button" class="choice-button ship" type="button">発送準備を続ける</button></div>
+    <div class="card"><h1>発送準備完了</h1><p id="complete-message"></p><div id="shipping-artifact-breakdown" class="artifact-breakdown"></div><div id="shipping-warnings" class="warning-list"></div><button id="complete-next-button" class="choice-button ship" type="button">発送準備を続ける</button><button id="complete-mode-return" class="choice-button mode-return-button" type="button">モード選択へ戻る</button></div>
   </section>
   <section id="ship-prep-status-screen" class="screen" aria-label="発送準備確定の結果確認">
-    <div class="card"><h1>発送準備確定の結果</h1><p id="ship-prep-status-notice">発送準備確定の結果を確認します。</p><div class="completion-result"><div class="completion-result-row"><span>確定リクエストID</span><strong id="ship-prep-status-id"></strong></div></div><div id="ship-prep-status-details" class="warning-list" hidden></div><div class="address-actions"><button id="ship-prep-status-retry" class="choice-button ship" type="button" hidden>同じ内容で再試行</button><button id="ship-prep-status-button" class="choice-button" type="button">結果を確認する（読み取り専用）</button></div></div>
+    <div class="card"><h1>発送準備確定の結果</h1><p id="ship-prep-status-notice">発送準備確定の結果を確認します。</p><div class="completion-result"><div class="completion-result-row"><span>確定リクエストID</span><strong id="ship-prep-status-id"></strong></div></div><div id="ship-prep-status-details" class="warning-list" hidden></div><div class="address-actions"><button id="ship-prep-status-retry" class="choice-button ship" type="button" hidden>同じ内容で再試行</button><button id="ship-prep-status-button" class="choice-button" type="button">結果を確認する（読み取り専用）</button></div><button id="ship-prep-status-mode-return" class="choice-button mode-return-button" type="button">モード選択へ戻る</button></div>
   </section>
   <section id="completion-result-screen" class="screen" aria-label="納品確認">
     <div class="card"><h1>納品の確認</h1><p>実物伝票の印字と、画面の追跡番号を照合してください。</p>
@@ -278,9 +284,9 @@
       <p id="completion-result-notice">P3/P4の照合結果を受け取るまで納品確定はできません。</p>
       <div id="completion-status-details" class="warning-list" hidden></div>
       <div class="address-actions"><button id="completion-result-cancel" class="choice-button" type="button">戻る</button><button id="completion-status-button" class="choice-button" type="button" hidden>結果を確認する（読み取り専用）</button><button id="completion-confirm-button" class="choice-button ship" type="button" disabled>印字と一致・納品確定</button></div>
+      <button id="completion-result-mode-return" class="choice-button mode-return-button" type="button">モード選択へ戻る</button>
     </div>
   </section>
-  <button id="home-button" type="button" hidden>処理モード選択</button>
   <canvas id="canvas"></canvas><div id="toast" role="status" aria-live="polite"></div>
   <aside id="install-hint" aria-label="ホーム画面への追加案内">
     <p>共有・メニューボタンから「ホーム画面に追加」を選ぶと、次回からすぐ起動できます。</p>
@@ -305,7 +311,6 @@
       const perfSendButton = document.getElementById('perf-send-button');
       const perfCopyButton = document.getElementById('perf-copy-button');
       const perfClearButton = document.getElementById('perf-clear-button');
-      const homeButton = document.getElementById('home-button');
       let stream = null;
       let scanning = false;
       let requestInFlight = false;
@@ -346,6 +351,10 @@
       let completionCanStartNextShipment = false;
       let shippingItems = [];
       let shippingContext = null;
+      // 発送準備の情報を取得・再確認している最中は「通信中」（要件 B2。判断117）
+      let shippingContextLoading = false;
+      // カメラの開始ごとの識別子。stopCamera（離脱）で進め、古い開始を見分ける（要件 B7。判断117・118）
+      let cameraSession = 0;
       let pendingFinalize = null;
       let pendingCarrierConfirmation = null;
       let pendingIssueData = null;
@@ -1522,7 +1531,17 @@
         printWorkerPausedReason = '';
         currentMode = 'print';
         updateCameraMode();
-        startCamera().then(() => {
+        resumePrintCamera_();
+      }
+
+      /**
+       * 再認証のあとの印刷の再開。**カメラが有効に開始できたときに1回だけ**、待ちの印刷を送る。
+       * 起動に失敗したら、エラー画面の「カメラに戻る」がこの処理をもう一度呼ぶ（待ちを持ち越す。実装レビュー第1巡 指摘2）。
+       * 途中で処理モード選択へ戻ったら（古い開始・待ちの破棄）、何も送らない。
+       */
+      function resumePrintCamera_() {
+        return startCamera(resumePrintCamera_).then(status => {
+          if (status !== 'started') return;
           pumpPrintQueue();
           maybeShowInstallHint();
         });
@@ -1593,7 +1612,6 @@
         });
         const nextScreen = document.getElementById(id);
         nextScreen.classList.add('active');
-        homeButton.hidden = ['mode-screen', 'signin-screen', 'forbidden-screen'].includes(id);
         nextScreen.classList.add('screen-transition-locked');
         screenTransitionUnlockTimer = setTimeout(() => {
           nextScreen.classList.remove('screen-transition-locked');
@@ -1634,6 +1652,7 @@
       }
 
       function stopCamera() {
+        cameraSession += 1;
         scanning = false;
         requestInFlight = false;
         scanGeneration += 1;
@@ -1679,7 +1698,9 @@
       }
 
       function returnHome_() {
-        if (requestInFlight || finalizeInFlight) {
+        // 通信中は戻らず、状態を1つも変えない（要件 B2。印刷の送信中・発送準備の情報の取得中を含む。判断117・118）
+        const printSending = activePrintRequestCount > 0 || printJobs.some(job => job.state === 'requesting');
+        if (requestInFlight || finalizeInFlight || printSending || shippingContextLoading) {
           showToast('処理中です。処理結果を確認してからモード選択へ戻ってください。', 'warning');
           return;
         }
@@ -1691,6 +1712,8 @@
         shippingContext = null;
         pendingFinalize = null;
         pendingIssueData = null;
+        // 運送会社確認の写し（読み取った注文と送付先）も捨てる。一覧だけ消すと写しに同じ注文が残る（実装レビュー第1巡 指摘4）
+        pendingCarrierConfirmation = null;
         resetCompletionShipmentState_();
         showModeSelect();
       }
@@ -1724,7 +1747,7 @@
         currentMode = 'print';
         resetPrintBatch();
         updateCameraMode();
-        startCamera().then(maybeShowInstallHint);
+        startCamera().then(status => { if (status === 'started') maybeShowInstallHint(); });
       }
 
       function showCarrierSelect() {
@@ -1746,7 +1769,7 @@
         resetCompletionShipmentState_();
         initializeZxingReader_('label').then(() => renderPerformancePanel());
         updateCameraMode();
-        startCamera().then(maybeShowInstallHint);
+        startCamera().then(status => { if (status === 'started') maybeShowInstallHint(); });
       }
 
       // 1発送分に紐づく状態をまとめて初期化する。
@@ -1780,7 +1803,7 @@
         if (!completionCanStartNextShipment) return;
         resetCompletionShipmentState_();
         updateCameraMode();
-        startCamera().then(maybeShowInstallHint);
+        startCamera().then(status => { if (status === 'started') maybeShowInstallHint(); });
       }
 
       function isPreviewDiagnostic_() {
@@ -1801,7 +1824,7 @@
         completionRawTrackingValue = '';
         requestInFlight = false;
         updateCameraMode();
-        startCamera().then(maybeShowInstallHint);
+        startCamera().then(status => { if (status === 'started') maybeShowInstallHint(); });
       }
 
       // **別名も CARRIER_UI_ が正本。** 会社を足したとき、正規化だけ漏れるのを防ぐ。
@@ -1900,8 +1923,9 @@
       async function startShippingScanning_() {
         const ctx = shippingContext || {};
         populateTeamDestinations(Array.isArray(ctx.team_destinations) ? ctx.team_destinations : []);
-        await startCamera();
-        maybeShowInstallHint();
+        const status = await startCamera();
+        if (status === 'started') maybeShowInstallHint();
+        return status;
       }
 
       async function startShippingMode() {
@@ -1924,10 +1948,16 @@
         showLoading('発送準備の情報を取得しています…');
         let measurement = null;
         try {
-          const result = await fetchReadJsonWithRetry_(
-            'ship_prep_context', { action: 'ship_prep_context', id_token: idToken }, null,
-            (attempt, total) => showLoading(`発送準備の情報を再確認しています（${attempt}回目/${total}回・読み取り専用）…`)
-          );
+          let result;
+          shippingContextLoading = true;
+          try {
+            result = await fetchReadJsonWithRetry_(
+              'ship_prep_context', { action: 'ship_prep_context', id_token: idToken }, null,
+              (attempt, total) => showLoading(`発送準備の情報を再確認しています（${attempt}回目/${total}回・読み取り専用）…`)
+            );
+          } finally {
+            shippingContextLoading = false;
+          }
           const data = result.data;
           measurement = result.measurement;
           if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
@@ -1940,8 +1970,9 @@
           serverEpochAtSync = Date.parse(data.server_now);
           performanceNowAtSync = performance.now();
           if (!Number.isFinite(serverEpochAtSync)) throw new Error('サーバー時刻を確認できませんでした。');
-          await startShippingScanning_();
-          finishRequestPerformance(measurement, 'success');
+          // 取得の成功の記録（計測履歴・完了時刻・計測パネル）は、カメラの開始が古くなったら書かない。
+          // 戻ったあとに次のモードの計測を上書きしない（実装レビュー第1巡 指摘3）。起動の失敗は今どおり記録する
+          if ((await startShippingScanning_()) !== 'stale') finishRequestPerformance(measurement, 'success');
         } catch (error) {
           measurement = error.performanceMeasurement || measurement;
           showError(requestFailureMessage_(error, error.message || '発送準備の営業日情報を取得できませんでした。'), startShippingMode, '発送準備を再試行');
@@ -2012,13 +2043,29 @@
         errorRetryAction = retryAction;
         document.getElementById('error-message').textContent = message || '予期しないエラーが発生しました。';
         document.getElementById('retry-button').textContent = retryLabel;
+        // 既存のボタンがモード選択行きのときは、新しいボタンを隠す（見える「モード選択へ戻る」は1つ。要件 B1）
+        document.getElementById('error-mode-return').hidden = retryLabel === 'モード選択へ戻る';
         showScreen('error-screen');
       }
 
-      async function startCamera() {
+      function stopTracks_(media) {
+        if (media && typeof media.getTracks === 'function') media.getTracks().forEach(track => track.stop());
+      }
+
+      /**
+       * カメラを点ける共通の処理。**結果を3つで返す**——'started'（有効な開始）／'failed'（有効だが起動できずエラー画面）／'stale'（古い開始）。
+       * 失敗のときのエラー画面の「カメラに戻る」で呼ぶ処理を retryAction で渡せる（既定はカメラだけの再試行）。
+       * 準備の途中で離脱（stopCamera）したら、その開始は古くなる。古い開始は、映像の取得・再生・読み取りの準備の
+       * どの待ちが成功しても失敗しても、画面・読み取りの予約・共有の状態（映像・検出器・計測値）を変えず、
+       * 自分が得た映像だけを止める（要件 B7。BK-4。判断117・118）。
+       */
+      async function startCamera(retryAction = null) {
         showLoading('カメラを準備しています…');
+        stopCamera();
+        const session = cameraSession;
+        const isCurrent = () => session === cameraSession;
+        let acquired = null;
         try {
-          stopCamera();
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('このブラウザではカメラを利用できません。');
           const cameraStartedAt = nowMs();
           cameraPerformance = {
@@ -2039,7 +2086,7 @@
             settings: {}
           };
           const mediaStartedAt = nowMs();
-          stream = await navigator.mediaDevices.getUserMedia({
+          acquired = await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: { ideal: 'environment' },
               width: { ideal: 1920 },
@@ -2048,12 +2095,15 @@
             },
             audio: false
           });
+          if (!isCurrent()) { stopTracks_(acquired); return 'stale'; }
+          stream = acquired;
           cameraPerformance.getUserMediaMs = nowMs() - mediaStartedAt;
-          video.srcObject = stream;
+          video.srcObject = acquired;
           const playStartedAt = nowMs();
           await video.play();
+          if (!isCurrent()) { stopTracks_(acquired); return 'stale'; }
           cameraPerformance.videoPlayMs = nowMs() - playStartedAt;
-          await initializeBarcodeDetector();
+          if (!(await initializeBarcodeDetector(isCurrent)) || !isCurrent()) { stopTracks_(acquired); return 'stale'; }
           cameraPerformance.settings = cameraSettingsSnapshot();
           cameraPerformance.cameraReadyMs = nowMs() - cameraStartedAt;
           scanning = true;
@@ -2061,35 +2111,50 @@
           beginScanCycle();
           renderPerformancePanel();
           scheduleScan();
+          return 'started';
         } catch (error) {
-          showError('カメラを起動できませんでした。\nブラウザのカメラ権限を許可して再試行してください。');
+          if (!isCurrent()) { stopTracks_(acquired); return 'stale'; }
+          showError('カメラを起動できませんでした。\nブラウザのカメラ権限を許可して再試行してください。', retryAction);
+          return 'failed';
         }
       }
 
-      async function initializeBarcodeDetector() {
+      /**
+       * 読み取りの準備。**待ちのあとで、古い開始なら何も書き換えずに false を返す**（検出器・対応形式・計測値。要件 B7）。
+       * 結果はいったん手元で作り、有効な開始のときだけ共有の状態へ書く。
+       */
+      async function initializeBarcodeDetector(isCurrent = () => true) {
         const detectorStartedAt = nowMs();
-        barcodeDetector = null;
-        barcodeDetectorSupportedFormats = [];
         const profile = scanProfile_();
         if (!('BarcodeDetector' in window)) {
+          if (!isCurrent()) return false;
+          barcodeDetector = null;
+          barcodeDetectorSupportedFormats = [];
           if (cameraPerformance) cameraPerformance.detectorInitMs = nowMs() - detectorStartedAt;
           await initializeZxingReader_(profile);
-          return;
+          return true;
         }
+        let detector = null;
+        let supported = [];
         try {
           const formats = await window.BarcodeDetector.getSupportedFormats();
-          barcodeDetectorSupportedFormats = Array.isArray(formats) ? formats : [];
-          if (cameraPerformance) cameraPerformance.barcodeDetectorSupportedFormats = [...barcodeDetectorSupportedFormats];
-          if (profile === 'qr' && formats.includes('qr_code')) {
-            barcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
-            if (cameraPerformance) cameraPerformance.barcodeDetectorQrSupported = true;
+          supported = Array.isArray(formats) ? formats : [];
+          if (profile === 'qr' && supported.includes('qr_code')) {
+            detector = new window.BarcodeDetector({ formats: ['qr_code'] });
           }
         } catch (error) {
-          barcodeDetector = null;
-        } finally {
-          if (cameraPerformance) cameraPerformance.detectorInitMs = nowMs() - detectorStartedAt;
+          detector = null;
+        }
+        if (!isCurrent()) return false;
+        barcodeDetector = detector;
+        barcodeDetectorSupportedFormats = supported;
+        if (cameraPerformance) {
+          cameraPerformance.barcodeDetectorSupportedFormats = [...supported];
+          if (detector) cameraPerformance.barcodeDetectorQrSupported = true;
+          cameraPerformance.detectorInitMs = nowMs() - detectorStartedAt;
         }
         if (profile === 'label') await initializeZxingReader_(profile);
+        return true;
       }
 
       function scanProfile_() {
@@ -2207,7 +2272,9 @@
         const generation = scanGeneration;
         const attemptStartedAt = nowMs();
         try {
-          const result = await decodeFrame();
+          const result = await decodeFrame(generation);
+          // 戻ったあと・入り直したあとの古い読み取りは、計測・通知・業務処理のどれにも書かない（実装レビュー第1巡 指摘5）
+          if (generation !== scanGeneration) return;
           recordScanAttempt(attemptStartedAt, nowMs() - attemptStartedAt, result);
           if (result.error) {
             scanning = false;
@@ -2216,7 +2283,7 @@
               : '伝票読取でエラーが発生しました。画面を開き直してください。';
             showToast(message, 'error');
           }
-          if (generation === scanGeneration && result.value) handleScanValue_(result.value, result.decoderPath, result.barcodeFormat);
+          if (result.value) handleScanValue_(result.value, result.decoderPath, result.barcodeFormat);
           if (debugPerformanceEnabled && nowMs() - performancePanelLastRenderedAt >= 250) {
             performancePanelLastRenderedAt = nowMs();
             renderPerformancePanel();
@@ -2229,7 +2296,7 @@
         }
       }
 
-      async function decodeFrame() {
+      async function decodeFrame(generation = scanGeneration) {
         const labelProfile = scanProfile_() === 'label';
         const scanConfig = (labelProfile ? completionScanConfig_() : null)
           || { widthFraction: SCAN_ROI_FRACTION, heightFraction: SCAN_ROI_FRACTION, shape: 'square' };
@@ -2260,6 +2327,8 @@
               canvasSide: targetWidth
             };
           } catch (error) {
+            // 古い読み取りの失敗で、新しい開始の検出器と計測値を消さない（実装レビュー第1巡 指摘5）
+            if (generation !== scanGeneration) return { value: '', decoderPath: 'stale', sourceSide: sourceWidth, canvasSide: targetWidth };
             barcodeDetector = null;
             if (cameraPerformance) cameraPerformance.barcodeDetectorQrSupported = false;
           }
@@ -3253,8 +3322,15 @@
         button.disabled = true;
         button.textContent = '更新しています…';
         try {
-          const result = await fetchReadJsonWithRetry_(
-            'ship_prep_context', { action: 'ship_prep_context', id_token: idToken }, null);
+          // 送付先の更新も発送準備の情報の取得なので「通信中」（戻らない。要件 B2。実装レビュー第1巡 指摘1）
+          let result;
+          shippingContextLoading = true;
+          try {
+            result = await fetchReadJsonWithRetry_(
+              'ship_prep_context', { action: 'ship_prep_context', id_token: idToken }, null);
+          } finally {
+            shippingContextLoading = false;
+          }
           const data = result.data;
           if (handleAuthError(data)) return;
           if (!data || data.ok !== true) {
@@ -4228,7 +4304,10 @@
       }
 
       document.getElementById('print-mode-button').addEventListener('click', startPrintMode);
-      homeButton.addEventListener('click', returnHome_);
+      // 処理モード選択へ戻るボタン（9画面。要件 B1・B2）。既存の3つの「モード選択へ戻る」は動きを変えない（B4）
+      ['camera-mode-return', 'loading-mode-return', 'error-mode-return', 'team-mode-return', 'carrier-confirmation-mode-return',
+        'shipping-issues-mode-return', 'complete-mode-return', 'ship-prep-status-mode-return', 'completion-result-mode-return']
+        .forEach(id => document.getElementById(id).addEventListener('click', returnHome_));
       document.getElementById('ship-mode-button').addEventListener('click', showCarrierSelect);
       document.getElementById('noqr-mode-button').addEventListener('click', startNoqrMode);
       document.getElementById('noqr-back').addEventListener('click', showModeSelect);
