@@ -122,8 +122,16 @@
     #team-destination-refresh { background:#2b3550; border:1px solid #52617f; color:#fff; }
     .address-form label { color:var(--muted); font-size:12px; }
     .address-form input, .address-form select { width:100%; padding:10px; border:1px solid #52617f; border-radius:8px; background:#0e1320; color:#fff; font:inherit; appearance:none; -webkit-appearance:none; }
-    .address-actions { display:flex; gap:9px; }
-    .address-actions button { flex:1; }
+    /* ボタンの並び（NU-1。2026-11-26）: 横一列で折り返さないと、ボタンが4つ以上のとき1つの幅が文字1つ分まで縮み、
+       日本語が1文字ずつ折り返して縦書きのように見えた。**2列の格子にし、列は等分（minmax(0,1fr)）で中身に押し広げられない。**
+       この枠は5つの画面で使う（注文書なし・運送会社の確認・発送前の確認・発送準備確定の結果・納品の確認） */
+    .address-actions { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:9px; }
+    .address-actions button { min-width:0; }
+    /* 注文書なしの要求の間の覆い（NU-3。2026-11-26）。**画面を切り替えずに上に重ねる**。トースト（z-index 20）より下 */
+    .noqr-busy { position:fixed; inset:0; z-index:15; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; padding:24px; background:#0b0e17d9; color:var(--text); text-align:center; }
+    .noqr-busy[hidden] { display:none; }
+    .noqr-busy p { margin:0; font-size:15px; line-height:1.6; }
+    .noqr-busy .noqr-busy-request { color:var(--muted); font-size:13px; word-break:break-all; }
     .warning-list { margin:16px 0 0; padding:12px 14px; border:1px solid var(--warn); border-radius:10px; color:#ffe3a3; text-align:left; font-size:13px; line-height:1.6; }
     .warning-list:empty { display:none; }
     .artifact-breakdown { margin:16px 0 0; padding:12px 14px; border:1px solid #52617f; border-radius:10px; color:var(--text); text-align:left; font-size:13px; line-height:1.6; }
@@ -160,7 +168,7 @@
     </div>
   </section>
   <section id="noqr-screen" class="screen" aria-label="発送準備(注文書なし)">
-    <div class="card"><h1>発送準備(注文書なし)</h1><p id="noqr-message">送付先と送り主をマスタから選び、伝票を1件発行します。</p>
+    <div id="noqr-card" class="card"><h1>発送準備(注文書なし)</h1><p id="noqr-message">送付先と送り主をマスタから選び、伝票を1件発行します。</p>
       <div id="noqr-pending" class="warning-list" hidden><p>発行中の要求ID（控えてください）: <strong id="noqr-request-id"></strong></p><p id="noqr-pending-shipment"></p></div>
       <div id="noqr-form" class="address-form">
         <label>送付先を検索<input id="noqr-dest-search" type="search" autocomplete="off"></label>
@@ -168,7 +176,6 @@
         <p id="noqr-sender-warning" class="warning-list" hidden></p>
         <label>送り主を検索<input id="noqr-sender-search" type="search" autocomplete="off"></label>
         <label>送り主<select id="noqr-sender-select"><option value="">選択してください</option></select></label>
-        <label id="noqr-store-wrap" hidden>ストア（契約）<select id="noqr-store-select"><option value="">選択してください</option></select></label>
         <label>運送会社<select id="noqr-carrier-select"><option value="">選択してください</option></select></label>
         <p id="noqr-clickpost-notice" class="warning-list" hidden>クリックポストの伝票の差出人は、クリックポストのアカウントの登録になります（選んだ送り主は印字されません。ログには残ります）。</p>
         <label>品名<input id="noqr-item" autocomplete="off"></label>
@@ -185,6 +192,7 @@
         <button id="noqr-new-button" class="choice-button ship" type="button" hidden>次の発行を始める</button>
       </div>
     </div>
+    <div id="noqr-busy" class="noqr-busy" role="status" aria-live="polite" hidden><div class="spinner"></div><p id="noqr-busy-message">処理しています…</p><p id="noqr-busy-request" class="noqr-busy-request"></p></div>
   </section>
   <section id="completion-mode-screen" class="screen" aria-label="納品方法選択">
     <div class="card"><h1>納品(お渡し・発送)</h1><p>納品方法を選び、注文書QRと実物伝票を対応させます。</p>
@@ -3865,6 +3873,8 @@
       let noqrContext = null;
       let noqrPending = null;
       let noqrInFlight = false;
+      // 覆いの段数（NU-3）。**ひと続きの処理（起動時の読み込み → 自動の照会、発行 → 引き継ぎの照会）の間は 0 にならない**
+      let noqrBusyDepth = 0;
       // 画面に「要確認」と引継ぎのボタンを出している要求ID。**引継ぎはこの要求ID にだけ効く**（実装レビュー第3巡 指摘1）
       let noqrNeedsCheckShownFor = null;
 
@@ -3988,6 +3998,35 @@
         else noqrShowButtons_(['noqr-status-button', 'noqr-cancel-button']);
       }
 
+      /**
+       * 覆いを出す（NU-3）。**段数で数え、ひと続きの処理の途中で消えない。** 要求ID が決まる前は空（「確保しています」）、
+       * 決まったら実際に処理する要求ID を出す。覆いの間は画面の操作を受けない（inert とボタンの入口の両方で止める）。
+       */
+      function noqrBusyBegin_(message, requestId) {
+        noqrBusyDepth += 1;
+        noqrBusyUpdate_(message, requestId);
+        const box = document.getElementById('noqr-busy');
+        box.hidden = false;
+        const card = document.getElementById('noqr-card');
+        if (card) { card.inert = true; card.setAttribute('aria-busy', 'true'); }
+      }
+      function noqrBusyUpdate_(message, requestId) {
+        if (!noqrBusyDepth) return;
+        if (message) document.getElementById('noqr-busy-message').textContent = message;
+        document.getElementById('noqr-busy-request').textContent = requestId ? '要求ID: ' + requestId : (requestId === null ? '要求IDを確保しています' : '');
+      }
+      function noqrBusyEnd_() {
+        noqrBusyDepth = Math.max(0, noqrBusyDepth - 1);
+        if (noqrBusyDepth) return;
+        document.getElementById('noqr-busy').hidden = true;
+        const card = document.getElementById('noqr-card');
+        if (card) { card.inert = false; card.setAttribute('aria-busy', 'false'); }
+      }
+      /** 覆いの間はボタンを受けない（NU-3 ③。キーボードの操作で入口が呼ばれても、要求を送らず画面も移らない）。 */
+      function noqrUnlessBusy_(fn) {
+        return (...args) => (noqrBusyDepth ? undefined : fn(...args));
+      }
+
       function noqrMessage_(text) {
         document.getElementById('noqr-message').textContent = text;
       }
@@ -4032,13 +4071,8 @@
         return noqrContext ? noqrContext.senders.find(row => row.master_id === id) || null : null;
       }
 
-      /** 送り主を変えたとき。**送付主へ変えたら、ストアの選択を空に戻す**（前の名義から引き継がない。Q9）。 */
-      function noqrApplySender_() {
-        const value = document.getElementById('noqr-sender-select').value;
-        const master = value.startsWith('master:');
-        document.getElementById('noqr-store-wrap').hidden = !master;
-        document.getElementById('noqr-store-select').value = '';
-      }
+      /** 送り主を変えたとき。★ストアの選択は無い（NU-2 ①。2026-11-26）——送付主の名義では要求にストアを付けない。 */
+      function noqrApplySender_() {}
 
       function noqrApplyCarrier_() {
         document.getElementById('noqr-clickpost-notice').hidden = document.getElementById('noqr-carrier-select').value !== 'clickpost';
@@ -4073,8 +4107,7 @@
         ['noqr-dest-search', 'noqr-sender-search', 'noqr-item'].forEach(id => { document.getElementById(id).value = ''; });
         noqrRenderDestinations_();
         noqrRenderSenders_();
-        ['noqr-dest-select', 'noqr-sender-select', 'noqr-store-select', 'noqr-carrier-select'].forEach(id => { document.getElementById(id).value = ''; });
-        document.getElementById('noqr-store-wrap').hidden = true;
+        ['noqr-dest-select', 'noqr-sender-select', 'noqr-carrier-select'].forEach(id => { document.getElementById(id).value = ''; });
         document.getElementById('noqr-sender-warning').hidden = true;
         document.getElementById('noqr-result').hidden = true;
         noqrApplyCarrier_();
@@ -4082,10 +4115,6 @@
 
       function noqrPopulate_(data) {
         noqrContext = data;
-        const store = document.getElementById('noqr-store-select');
-        store.textContent = '';
-        store.appendChild(new Option('選択してください', ''));
-        (data.stores || []).forEach(s => store.appendChild(new Option(`${s.label}（${s.ship_from_name}）`, s.handle)));
         const carrier = document.getElementById('noqr-carrier-select');
         carrier.textContent = '';
         carrier.appendChild(new Option('選択してください', ''));
@@ -4101,14 +4130,20 @@
         return result.data || {};
       }
 
+      /** @return {Promise<{auth: boolean}>} auth が true なら認証の失敗（**ひと続きの処理を止め、後の通信を送らない**。NU-3 ⑤） */
       async function noqrLoadContext_() {
+        noqrBusyBegin_('マスタを読み込んでいます…', '');
         try {
           const data = await noqrPost_('noqr_context', {});
-          if (handleAuthError(data)) return;
-          if (!data.ok) { showToast(data.error || 'マスタを読めませんでした。', 'error'); return; }
+          if (handleAuthError(data)) return { auth: true };
+          if (!data.ok) { showToast(data.error || 'マスタを読めませんでした。', 'error'); return { auth: false }; }
           noqrPopulate_(data);
+          return { auth: false };
         } catch (error) {
           showToast(requestFailureMessage_(error, 'マスタを読めませんでした。もう一度読み込み直してください。'), 'error');
+          return { auth: false };
+        } finally {
+          noqrBusyEnd_();
         }
       }
 
@@ -4119,17 +4154,24 @@
         const stored = noqrReadPending_();
         noqrPending = stored.record;
         noqrRenderPending_();
-        await noqrLoadContext_();
-        if (!stored.ok) {
-          noqrMessage_('端末の記録を読めないため、発行を始めません。画面を開き直してください。');
-          noqrShowButtons_([]);
-          return;
-        }
-        if (noqrPending) {
-          noqrMessage_('未確定の発行があります。同じ要求IDで結果を照会します（新しい発行はしません）。');
-          await noqrCheckStatus_();
-        } else {
-          noqrResetForm_();
+        // ★覆いは、マスタの読み込みから自動の照会まで続ける（NU-3 ⑦）
+        noqrBusyBegin_('マスタを読み込んでいます…', '');
+        try {
+          const loaded = await noqrLoadContext_();
+          if (loaded.auth) return;   // 認証の失敗: 後の通信を送らない（端末の記録は残し、入り直したときに照会する）
+          if (!stored.ok) {
+            noqrMessage_('端末の記録を読めないため、発行を始めません。画面を開き直してください。');
+            noqrShowButtons_([]);
+            return;
+          }
+          if (noqrPending) {
+            noqrMessage_('未確定の発行があります。同じ要求IDで結果を照会します（新しい発行はしません）。');
+            await noqrCheckStatus_();
+          } else {
+            noqrResetForm_();
+          }
+        } finally {
+          noqrBusyEnd_();
         }
       }
 
@@ -4155,10 +4197,8 @@
         if (kind === 'master') {
           const sender = noqrFindSender_(id);
           if (!sender) return { error: '送り主を選び直してください。' };
-          const store = document.getElementById('noqr-store-select').value;
-          if (!store) return { error: 'ストア（契約）を選んでください。' };
+          // ★ストアを付けない（新しい画面の形。NU-2 ②）。佐川のご依頼主コードはサーバーで空になる（判断189）
           payload.sender_snapshot = Object.fromEntries(NOQR_SENDER_FIELDS.map(key => [key, text(sender[key])]));
-          payload.store = store;
         }
         return { payload };
       }
@@ -4168,19 +4208,30 @@
         if (noqrPending) { showToast('未確定の発行があります。先に結果を照会してください。', 'warning'); return; }
         const built = noqrBuildPayload_();
         if (built.error) { showToast(built.error, 'error'); return; }
-        // **タブ間で排他して、記録の確かめから確保までを行う**（別のタブが先に始めた発行を上書きしない）。
-        // 最初に送る前に、端末に保存して読み戻せることを確かめる。できなければ送らない（Q16）
-        const claim = await noqrClaim_(built.payload);
-        if (claim.state === 'adopt') { await noqrAdoptPending_(claim.record); return; }
-        if (claim.state !== 'claimed') {
-          showToast(claim.state === 'nolock' ? 'このブラウザでは発行の記録をタブ間で守れないため、送りませんでした。'
-            : claim.state === 'unreadable' ? '端末の記録を読めないため、送りませんでした。'
-            : '端末に発行の記録を保存できないため、送りませんでした。', 'error');
-          return;
+        // ★覆いは端末の記録の確保の待ちから出す（要求ID はまだ無い。NU-3 ①⑧）。引き継ぎの照会・送信まで続ける（⑦）
+        noqrBusyBegin_('伝票を発行しています…', null);
+        try {
+          // **タブ間で排他して、記録の確かめから確保までを行う**（別のタブが先に始めた発行を上書きしない）。
+          // 最初に送る前に、端末に保存して読み戻せることを確かめる。できなければ送らない（Q16）
+          const claim = await noqrClaim_(built.payload);
+          if (claim.state === 'adopt') {
+            noqrBusyUpdate_('別の画面で始めた発行を照会しています…', claim.record && claim.record.request_id);
+            await noqrAdoptPending_(claim.record);
+            return;
+          }
+          if (claim.state !== 'claimed') {
+            showToast(claim.state === 'nolock' ? 'このブラウザでは発行の記録をタブ間で守れないため、送りませんでした。'
+              : claim.state === 'unreadable' ? '端末の記録を読めないため、送りませんでした。'
+              : '端末に発行の記録を保存できないため、送りませんでした。', 'error');
+            return;
+          }
+          noqrPending = claim.record;
+          noqrRenderPending_();
+          noqrBusyUpdate_('伝票を発行しています…', claim.record.request_id);
+          await noqrSend_();
+        } finally {
+          noqrBusyEnd_();
         }
-        noqrPending = claim.record;
-        noqrRenderPending_();
-        await noqrSend_();
       }
 
       /** 応答を待つ間に、この画面の記録が別の要求ID に替わっていないか（実装レビュー第2巡 指摘1）。 */
@@ -4193,6 +4244,7 @@
         noqrInFlight = true;
         const requestId = noqrPending.request_id;
         noqrMessage_('伝票を発行しています…');
+        noqrBusyBegin_('伝票を発行しています…', requestId);
         try {
           const data = await noqrPost_('noqr_issue', Object.assign({ request_id: requestId }, noqrPending.payload));
           if (handleAuthError(data)) return;
@@ -4205,6 +4257,7 @@
           }
         } finally {
           noqrInFlight = false;
+          noqrBusyEnd_();
         }
       }
 
@@ -4256,6 +4309,12 @@
           noqrRenderPending_('resendable');
           return;
         }
+        if (data.error_code === 'GO_SENDER_STALE' || data.error_code === 'GO_DEST_STALE') {
+          // ★端末の記録（同じ要求ID・元の中身）は消さない。選び直した中身を同じ要求ID に入れない（NU-2 ⑨）
+          noqrMessage_(`マスタが読み込んだ後で変わったため、発行していません（要求ID: ${requestId}）。「この発行を取り消す」で取り消してから、マスタを読み込み直して選び直してください。`);
+          noqrRenderPending_();
+          return;
+        }
         noqrMessage_((data.error || '発行できませんでした。結果を照会してください。') + (data.detail ? '（' + data.detail + '）' : ''));
         noqrRenderPending_();
       }
@@ -4264,6 +4323,7 @@
         if (!noqrPending || noqrInFlight) return;
         noqrInFlight = true;
         const requestId = noqrPending.request_id;
+        noqrBusyBegin_('結果を照会しています…', requestId);
         try {
           const data = await noqrPost_('noqr_status', { request_id: requestId });
           if (handleAuthError(data)) return;
@@ -4276,6 +4336,7 @@
           }
         } finally {
           noqrInFlight = false;
+          noqrBusyEnd_();
         }
       }
 
@@ -4283,6 +4344,7 @@
         if (!noqrPending || noqrInFlight) return;
         noqrInFlight = true;
         const requestId = noqrPending.request_id;
+        noqrBusyBegin_('取り消しています…', requestId);
         try {
           const data = await noqrPost_('noqr_cancel', { request_id: requestId });
           if (handleAuthError(data)) return;
@@ -4295,6 +4357,7 @@
           }
         } finally {
           noqrInFlight = false;
+          noqrBusyEnd_();
         }
       }
 
@@ -4321,19 +4384,20 @@
         .forEach(id => document.getElementById(id).addEventListener('click', returnHome_));
       document.getElementById('ship-mode-button').addEventListener('click', showCarrierSelect);
       document.getElementById('noqr-mode-button').addEventListener('click', startNoqrMode);
-      document.getElementById('noqr-back').addEventListener('click', showModeSelect);
-      document.getElementById('noqr-refresh').addEventListener('click', noqrLoadContext_);
+      // ★注文書なしの入口は、覆いの間は受けない（NU-3 ③。2026-11-26）
+      document.getElementById('noqr-back').addEventListener('click', noqrUnlessBusy_(showModeSelect));
+      document.getElementById('noqr-refresh').addEventListener('click', noqrUnlessBusy_(noqrLoadContext_));
       document.getElementById('noqr-dest-search').addEventListener('input', noqrRenderDestinations_);
       document.getElementById('noqr-sender-search').addEventListener('input', noqrRenderSenders_);
       document.getElementById('noqr-dest-select').addEventListener('change', noqrApplyDestination_);
       document.getElementById('noqr-sender-select').addEventListener('change', noqrApplySender_);
       document.getElementById('noqr-carrier-select').addEventListener('change', noqrApplyCarrier_);
-      document.getElementById('noqr-issue-button').addEventListener('click', noqrIssue_);
-      document.getElementById('noqr-status-button').addEventListener('click', noqrCheckStatus_);
-      document.getElementById('noqr-resend-button').addEventListener('click', noqrSend_);
-      document.getElementById('noqr-cancel-button').addEventListener('click', noqrCancel_);
-      document.getElementById('noqr-handoff-button').addEventListener('click', noqrHandoff_);
-      document.getElementById('noqr-new-button').addEventListener('click', noqrNew_);
+      document.getElementById('noqr-issue-button').addEventListener('click', noqrUnlessBusy_(noqrIssue_));
+      document.getElementById('noqr-status-button').addEventListener('click', noqrUnlessBusy_(noqrCheckStatus_));
+      document.getElementById('noqr-resend-button').addEventListener('click', noqrUnlessBusy_(noqrSend_));
+      document.getElementById('noqr-cancel-button').addEventListener('click', noqrUnlessBusy_(noqrCancel_));
+      document.getElementById('noqr-handoff-button').addEventListener('click', noqrUnlessBusy_(noqrHandoff_));
+      document.getElementById('noqr-new-button').addEventListener('click', noqrUnlessBusy_(noqrNew_));
       // 実機のブラウザには必ず在る。**無い環境（試験の仕掛け）では登録しない**
       if (typeof window.addEventListener === 'function') window.addEventListener('storage', event => {
         if (event.key !== NOQR_PENDING_STORAGE_KEY || currentMode !== 'noqr') return;
