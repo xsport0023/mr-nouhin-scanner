@@ -2838,6 +2838,19 @@
           showToast('処理中です。少し待ってから結果を確認してください。', 'warning');
           return;
         }
+        if (result.statusUncertain === 'STATUS_MAYBE_IN_PROGRESS' || result.statusUncertain === 'STATUS_UNCONFIRMED') {
+          // LG-3（2026-11-26。計画 mn-ledgerguard-20261126）: 照会（手動・確定の応答が途切れた直後の自動）が、
+          // 結果を言い切れないと答えた。**「未実行」と言わない。確定は押せないまま、照会のボタンを出す。**
+          // 復帰の記録は消さない（今どおり）。自動の照会・確定の送信は繰り返さない
+          const maybe = result.statusUncertain === 'STATUS_MAYBE_IN_PROGRESS';
+          confirm.textContent = maybe ? '処理中の可能性（結果を確認してください）' : '要確認（再実行不可）';
+          notice.textContent = result.error || (maybe
+            ? '処理中の可能性があります。少し待ってからもう一度「結果を確認する」を押してください。'
+            : '結果を確かめられません。再実行せず、担当者へ確認してください。');
+          showToast(maybe ? '処理中の可能性があります。少し待ってから結果を確認してください。'
+            : '結果を確かめられません。再実行せず、担当者へ確認してください。', 'warning');
+          return;
+        }
         confirm.textContent = '要確認（再実行不可）';
         if (result.outcomeUnknown === true) {
           notice.textContent = '発送確定が完了したか確認できていません。外部処理は再実行せず、「結果を確認する（読み取り専用）」を押してください。';
@@ -3042,6 +3055,12 @@
               const data = result.data || {};
               measurement = result.measurement;
               if (handleAuthError(data)) { finishRequestPerformance(measurement, 'auth_error'); return; }
+              if (!data.ok && (data.error_code === 'STATUS_MAYBE_IN_PROGRESS' || data.error_code === 'STATUS_UNCONFIRMED')) {
+                // LG-3: 照会のボタンを出し、確定は押せないまま（renderCompletionExecutionResult_ の同じ分岐）
+                renderCompletionExecutionResult_({ complete: false, statusUncertain: data.error_code, error: data.error || '' });
+                finishRequestPerformance(measurement, 'api_error');
+                return;
+              }
               if (!data.ok) {
                 showScreen('completion-result-screen');
                 showToast(data.error || '結果を確認できませんでした。もう一度確認してください。', 'error');
